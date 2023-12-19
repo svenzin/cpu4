@@ -1,3 +1,4 @@
 /.env
 /.vscode
-/cpu4
+
+__pycache__
