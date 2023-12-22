@@ -1,6 +1,6 @@
 import unittest
 
-from simulator.signals import Group, Value, make_groups
+from cpu4.simulator.signals import Group, Value, make_groups
 
 
 class TestValue(unittest.TestCase):

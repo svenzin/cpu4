@@ -1,6 +1,6 @@
 import unittest
 
-import interpreter as i
+import cpu4.interpreter as i
 
 
 class TestInterpreter(unittest.TestCase):
