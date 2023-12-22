@@ -1,7 +1,7 @@
 import unittest
 
 from simulator import simulator as s
-from simulator.simulator import LO, HI, Tr, Tf
+from simulator.simulator import LO, HI, TLO, THI
 
 
 class TestClock(unittest.TestCase):
@@ -28,13 +28,13 @@ class TestClock(unittest.TestCase):
 
         c = s.Clock(s.hz(1), s.ms(100), s.ms(200))
         c.update(s.s(0))
-        self.assertEqual(Tr, c.clock.value)
+        self.assertEqual(TLO, c.clock.value)
         
         c.update(s.ms(100))
         self.assertEqual(HI, c.clock.value)
         
         c.update(s.ms(900))
-        self.assertEqual(Tf, c.clock.value)
+        self.assertEqual(THI, c.clock.value)
         
         c.update(s.ms(200))
         self.assertEqual(LO, c.clock.value)
@@ -45,7 +45,7 @@ class TestClock(unittest.TestCase):
 
         s.step()
         self.assertEqual(0, s.timestamp.t)
-        self.assertEqual(Tr, c.clock.value)
+        self.assertEqual(TLO, c.clock.value)
         
         s.step()
         self.assertEqual(0.1, s.timestamp.t)
@@ -53,7 +53,7 @@ class TestClock(unittest.TestCase):
         
         s.step()
         self.assertEqual(1, s.timestamp.t)
-        self.assertEqual(Tf, c.clock.value)
+        self.assertEqual(THI, c.clock.value)
         
         s.step()
         self.assertEqual(1.2, s.timestamp.t)
