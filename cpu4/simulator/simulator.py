@@ -1,33 +1,43 @@
 from typing import Optional
+import math
 
 # time
 class Timestamp:
-    def __init__(self, seconds: float):
-        self.t = seconds
+    def __init__(self, nanoseconds: int):
+        self.t = nanoseconds
     
     def __iadd__(self, dt: 'Duration'):
         self.t += dt.d
         return self
 
 class Duration:
-    def __init__(self, seconds: float):
-        self.d = seconds
+    def __init__(self, nanoseconds: int):
+        self.d = nanoseconds
     
     def __repr__(self):
-        return f'Duration({repr(self.d)})'
+        return f'Duration({repr(self.d / 1e9)})'
     
     def to_frequency(self) -> 'Frequency':
-        return Frequency(1.0 / self.d)
+        return Frequency(1e9 / self.d)
     
     def __sub__(self, other: 'Duration'):
         return Duration(self.d - other.d)
     
+    def __add__(self, other: 'Duration'):
+        return Duration(self.d + other.d)
+    
     def __iadd__(self, other: 'Duration'):
         self.d += other.d
         return self
+    
+    def __mul__(self, other: float):
+        return Duration(self.d * other)
+    
+    def __rmul__(self, other: float):
+        return self * other
 
     def __eq__(self, other):
-        return self.d == other.d
+        return (other is not None) and (self.d == other.d)
 
     def __lt__(self, other):
         return self.d < other.d
@@ -36,16 +46,16 @@ class Duration:
         return self.d <= other.d
 
 def s(t: float):
-    return Duration(t)
+    return ns(1e9 * t)
 
 def ms(t: float):
-    return s(1e-3 * t)
+    return ns(1e6 * t)
 
 def us(t: float):
-    return s(1e-6 * t)
+    return ns(1e3 * t)
 
 def ns(t: float):
-    return s(1e-9 * t)
+    return Duration(math.floor(t))
 
 # frequency
 class Frequency:
@@ -53,7 +63,7 @@ class Frequency:
         self.f = hertz
     
     def to_duration(self) -> Duration:
-        return Duration(1.0 / self.f)
+        return s(1.0 / self.f)
 
 def hz(f: float):
     return Frequency(f)
@@ -65,16 +75,18 @@ def mhz(f: float):
     return hz(1e6 * f)
 
 # bases
-LO = 0
-HI = 1
+LO = 'LO'
+HI = 'HI'
+TLM = 'TLM'
+TMH = 'TMH'
+THM = 'THM'
+TML = 'TML'
 Z = 'Z'
-T = 'T'
-TLO = 'TLO'
-THI = 'THI'
 UNDEFINED = 'U'
 
 class System:
-    def __init__(self) -> None:
+    def __init__(self, m=0.5) -> None:
+        self.m = m
         self.clear()
 
     def register_element(self, element, name):
@@ -96,12 +108,13 @@ class System:
         self.timestamp += dt
     
     def step(self):
-        current_dt = min((element.next_update().d for element in self.elements.values()))
+        dts = [element.next_update() for element in self.elements.values()]
+        current_dt = min((dt.d for dt in dts if dt is not None))
         self.update(Duration(current_dt))
 
 class State:
     def __init__(self) -> None:
-        self.value = 'U'
+        self.value = UNDEFINED
         self.is_driving = False
     
     def set(self, value, drive=False):
@@ -113,15 +126,46 @@ system = System()
 class Clock:
     def __init__(self,
                  f: Frequency,
-                 t_rise: Optional[Duration]=None,
-                 t_fall: Optional[Duration]=None) -> None:
+                 *,
+                 tt: Optional[Duration]=None,
+                 duty: float=0.5,
+                 phase: float=0):
+        assert 0 < duty < 1
+        assert 0 <= phase < 360
         self.f = f
-        self.t_rise = t_rise or s(0)
-        self.t_fall = t_fall or s(0)
-        self.t = f.to_duration()
-        self.dt = Duration(0)
+        self.p = f.to_duration()
+        self.tt = tt or s(0)
+        self.t_hi = duty * self.p
+        self.t_lo = (1 - duty) * self.p
         self.clock = State()
-        self.clock.set(LO, True)
+        # apply phase using updates
+        end_tmh = (1 - system.m) * self.tt
+        end_hi = self.t_hi - (1 - system.m) * self.tt
+        end_thm = self.t_hi
+        end_tml = self.t_hi + system.m * self.tt
+        end_lo = self.t_hi + self.t_lo - system.m * self.tt
+        end_tlm = self.t_hi + self.t_lo
+        self.dt = (1 - phase / 360) * self.p
+        if self.dt <= end_tmh:
+            self.dt = end_tmh - self.dt
+            self.clock.set(TMH, True)
+        elif self.dt <= end_hi:
+            self.dt = end_hi - self.dt
+            self.clock.set(HI, True)
+        elif self.dt <= end_thm:
+            self.dt = end_thm - self.dt
+            self.clock.set(THM, True)
+        elif self.dt <= end_tml:
+            self.dt = end_tml - self.dt
+            self.clock.set(TML, True)
+        elif self.dt <= end_lo:
+            self.dt = end_lo - self.dt
+            self.clock.set(LO, True)
+        elif self.dt <= end_tlm:
+            self.dt = end_tlm - self.dt
+            self.clock.set(TLM, True)
+        assert self.dt >= Duration(0)
+        assert self.clock.value in [TMH, HI, THM, TML, LO, TLM]
         system.register_element(self, 'clock')
         system.register_state(self.clock, 'clock.clock')
 
@@ -133,64 +177,79 @@ class Clock:
         self.dt -= dt
         while self.dt <= s(0):
             if self.clock.value == LO:
-                self.clock.set(TLO, True)
-                self.dt += self.t_rise
-            elif self.clock.value == TLO:
+                self.clock.set(TLM, True)
+                self.dt += self.tt * system.m
+            elif self.clock.value == TLM:
+                self.clock.set(TMH, True)
+                self.dt += self.tt * (1 - system.m)
+            elif self.clock.value == TMH:
                 self.clock.set(HI, True)
-                self.dt += self.t - self.t_rise
+                self.dt += self.t_hi - self.tt
             elif self.clock.value == HI:
-                self.clock.set(THI, True)
-                self.dt += self.t_fall
-            elif self.clock.value == THI:
+                self.clock.set(THM, True)
+                self.dt += self.tt * (1 - system.m)
+            elif self.clock.value == THM:
+                self.clock.set(TML, True)
+                self.dt += self.tt * system.m
+            elif self.clock.value == TML:
                 self.clock.set(LO, True)
-                self.dt += self.t - self.t_fall
+                self.dt += self.t_lo - self.tt
             else:
                 assert False
 
 class Buffer:
     def __init__(self, input: State, t_delay: Duration, t_transition: Duration):
+        assert t_transition < t_delay
         self.t_propagation = t_delay
         self.t_transition = t_transition
         
         self.input = input
-        self.previous_input_value = None
+        self.previous_input_value = UNDEFINED
         
         self.output = State()
         self.output.set(UNDEFINED, True)
         
-        self.dt_propagation = None
-        self.dt_transition = None
+        self.transitions = []
+
+        system.register_element(self, 'buffer')
+        system.register_state(self.output, 'buffer.output')
 
     def next_update(self):
-        if self.previous_input_value != self.input.value:
-            assert self.dt_propagation is None # For now reject multiple input transitions during a single propagation period
-            self.previous_input_value = self.input.value
-            self.dt_propagation = self.t_propagation
-            self.dt_transition = self.t_transition
-        return self.dt_propagation or self.dt_transition
+        input_value = {LO: LO, TLM: LO, TML: LO,
+                       HI: HI, TMH: HI, THM: HI,
+                       Z: Z, UNDEFINED: UNDEFINED}[self.input.value]
+        if self.previous_input_value != input_value:
+            if self.previous_input_value == UNDEFINED:
+                # Initialization is "free"
+                self.previous_input_value = input_value
+                self.transitions.append((input_value, Duration(0)))
+            elif input_value == LO:
+                self.previous_input_value = input_value
+                self.transitions.append((THM, self.t_propagation - (1 - system.m) * self.t_transition))
+                self.transitions.append((TML, self.t_propagation))
+                self.transitions.append((LO, self.t_propagation + system.m * self.t_transition))
+            elif input_value == HI:
+                self.previous_input_value = input_value
+                self.transitions.append((TLM, self.t_propagation - (1 - system.m) * self.t_transition))
+                self.transitions.append((TMH, self.t_propagation))
+                self.transitions.append((HI, self.t_propagation + system.m * self.t_transition))
+            else:
+                assert False
+        if len(self.transitions) > 0:
+            _, dt = self.transitions[0]
+            return dt
+        else:
+            return None
     
     def update(self, dt: Duration):
-        assert self.previous_input_value == self.input.value
-        if self.dt_propagation is not None:
-            print(self.dt_propagation, dt, self.dt_propagation <= dt)
-            assert dt <= self.dt_propagation
-            self.dt_propagation -= dt
-            if self.dt_propagation <= Duration(0):
-                self.dt_propagation = None
-                if self.previous_input_value in [LO, TLO]:
-                    self.output.set(TLO, True)
-                elif self.previous_input_value in [HI, THI]:
-                    self.output.set(THI, True)
-                else:
-                    assert False
-        elif self.dt_transition is not None:
-            assert dt <= self.dt_transition
-            self.dt_transition -= dt
-            if self.dt_transition <= Duration(0):
-                self.dt_transition = None
-                if self.output.value == TLO:
-                    self.output.set(LO, True)
-                elif self.output.value == THI:
-                    self.output.set(HI, True)
-                else:
-                    assert False
+        if len(self.transitions) == 0:
+            return
+        transitions = []
+        for value, dt_transition in self.transitions:
+            assert dt <= dt_transition
+            dt_transition -= dt
+            if dt_transition <= Duration(0):
+                self.output.set(value, True)
+            else:
+                transitions.append((value, dt_transition))
+        self.transitions = transitions

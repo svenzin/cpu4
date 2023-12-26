@@ -1,7 +1,7 @@
 import unittest
 
-from simulator import simulator as s
-from simulator.simulator import LO, HI, TLO, THI
+from cpu4.simulator import simulator as s
+from cpu4.simulator.simulator import LO, HI
 
 
 class TestClock(unittest.TestCase):
@@ -28,13 +28,13 @@ class TestClock(unittest.TestCase):
 
         c = s.Clock(s.hz(1), s.ms(100), s.ms(200))
         c.update(s.s(0))
-        self.assertEqual(TLO, c.clock.value)
+        self.assertEqual(TLH, c.clock.value)
         
         c.update(s.ms(100))
         self.assertEqual(HI, c.clock.value)
         
         c.update(s.ms(900))
-        self.assertEqual(THI, c.clock.value)
+        self.assertEqual(THL, c.clock.value)
         
         c.update(s.ms(200))
         self.assertEqual(LO, c.clock.value)
@@ -43,18 +43,18 @@ class TestClock(unittest.TestCase):
         s.system.clear()
         c = s.Clock(s.hz(1), s.ms(100), s.ms(200))
 
-        s.step()
-        self.assertEqual(0, s.timestamp.t)
-        self.assertEqual(TLO, c.clock.value)
+        s.system.step()
+        self.assertEqual(s.s(0).d, s.system.timestamp.t)
+        self.assertEqual(TLH, c.clock.value)
         
-        s.step()
-        self.assertEqual(0.1, s.timestamp.t)
+        s.system.step()
+        self.assertEqual(s.s(0.1).d, s.system.timestamp.t)
         self.assertEqual(HI, c.clock.value)
         
-        s.step()
-        self.assertEqual(1, s.timestamp.t)
-        self.assertEqual(THI, c.clock.value)
+        s.system.step()
+        self.assertEqual(s.s(1).d, s.system.timestamp.t)
+        self.assertEqual(THL, c.clock.value)
         
-        s.step()
-        self.assertEqual(1.2, s.timestamp.t)
+        s.system.step()
+        self.assertEqual(s.s(1.2).d, s.system.timestamp.t)
         self.assertEqual(LO, c.clock.value)
