@@ -198,10 +198,10 @@ class Clock:
                 assert False
 
 class Buffer:
-    def __init__(self, input: State, t_delay: Duration, t_transition: Duration):
-        assert t_transition < t_delay
-        self.t_propagation = t_delay
-        self.t_transition = t_transition
+    def __init__(self, input: State, tp: Duration, tt: Duration):
+        assert tt < tp
+        self.tp = tp
+        self.tt = tt
         
         self.input = input
         self.previous_input_value = UNDEFINED
@@ -225,16 +225,77 @@ class Buffer:
                 self.transitions.append((input_value, Duration(0)))
             elif input_value == LO:
                 self.previous_input_value = input_value
-                self.transitions.append((THM, self.t_propagation - (1 - system.m) * self.t_transition))
-                self.transitions.append((TML, self.t_propagation))
-                self.transitions.append((LO, self.t_propagation + system.m * self.t_transition))
+                self.transitions.append((THM, self.tp - (1 - system.m) * self.tt))
+                self.transitions.append((TML, self.tp))
+                self.transitions.append((LO, self.tp + system.m * self.tt))
             elif input_value == HI:
                 self.previous_input_value = input_value
-                self.transitions.append((TLM, self.t_propagation - (1 - system.m) * self.t_transition))
-                self.transitions.append((TMH, self.t_propagation))
-                self.transitions.append((HI, self.t_propagation + system.m * self.t_transition))
+                self.transitions.append((TLM, self.tp - (1 - system.m) * self.tt))
+                self.transitions.append((TMH, self.tp))
+                self.transitions.append((HI, self.tp + system.m * self.tt))
             else:
                 assert False
+        if len(self.transitions) > 0:
+            _, dt = self.transitions[0]
+            return dt
+        else:
+            return None
+    
+    def update(self, dt: Duration):
+        if len(self.transitions) == 0:
+            return
+        transitions = []
+        for value, dt_transition in self.transitions:
+            assert dt <= dt_transition
+            dt_transition -= dt
+            if dt_transition <= Duration(0):
+                self.output.set(value, True)
+            else:
+                transitions.append((value, dt_transition))
+        self.transitions = transitions
+
+
+class Not:
+    def __init__(self, input: State, tp: Duration, tt: Duration):
+        assert tt < tp
+        self.tp = tp
+        self.tt = tt
+        
+        self.input = input
+        self.previous_input_value = UNDEFINED
+        
+        self.output = State()
+        self.output.set(UNDEFINED, True)
+        
+        self.transitions = []
+
+        system.register_element(self, 'buffer')
+        system.register_state(self.output, 'buffer.output')
+
+    def next_update(self):
+        input_value = {LO: LO, TLM: LO, TML: LO,
+                       HI: HI, TMH: HI, THM: HI,
+                       Z: Z, UNDEFINED: UNDEFINED}[self.input.value]
+        if self.previous_input_value != input_value:
+            if input_value == LO:
+                # Initialization is "free"
+                if self.previous_input_value == UNDEFINED:
+                    self.transitions.append((HI, Duration(0)))
+                else:
+                    self.transitions.append((TLM, self.tp - (1 - system.m) * self.tt))
+                    self.transitions.append((TMH, self.tp))
+                    self.transitions.append((HI, self.tp + system.m * self.tt))
+            elif input_value == HI:
+                # Initialization is "free"
+                if self.previous_input_value == UNDEFINED:
+                    self.transitions.append((LO, Duration(0)))
+                else:
+                    self.transitions.append((THM, self.tp - (1 - system.m) * self.tt))
+                    self.transitions.append((TML, self.tp))
+                    self.transitions.append((LO, self.tp + system.m * self.tt))
+            else:
+                assert False
+            self.previous_input_value = input_value
         if len(self.transitions) > 0:
             _, dt = self.transitions[0]
             return dt

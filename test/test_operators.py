@@ -5,15 +5,21 @@ from cpu4.simulator.simulator import LO, HI, TLM, TMH, THM, TML, UNDEFINED
 
 
 class TestClock(unittest.TestCase):
-    def test_initial_state(self):
+    def test_init_phase_0(self):
         s.system.clear()
-        c = s.Clock(s.hz(1), tt=s.ms(200))
-
-        self.assertEqual(s.s(0).d, s.system.timestamp.t)
+        c = s.Clock(s.hz(1), tt=s.ms(200), phase=0)
         self.assertEqual(TLM, c.clock.value)
         self.assertEqual(s.s(0), c.next_update())
         c.update(s.s(0))
         self.assertEqual(TMH, c.clock.value)
+
+    def test_init_phase_180(self):
+        s.system.clear()
+        c = s.Clock(s.hz(1), tt=s.ms(200), phase=180)
+        self.assertEqual(THM, c.clock.value)
+        self.assertEqual(s.s(0), c.next_update())
+        c.update(s.s(0))
+        self.assertEqual(TML, c.clock.value)
 
     def test_clock(self):
         s.system.clear()
@@ -176,3 +182,27 @@ class TestCombinations(unittest.TestCase):
         step(1.45, LO, THM)
         step(1.50, LO, TML)
         step(1.55, LO,  LO)
+
+    def test_inverted_clock(self):
+        s.system.clear()
+
+        c = s.Clock(s.hz(0.5), tt=s.ms(100))
+        b = s.Not(c.clock, s.ms(500), s.ms(100))
+
+        def step(t, cv, bv):
+            s.system.step()
+            self.assertEqual(s.s(t).d, s.system.timestamp.t)
+            self.assertEqual(cv, c.clock.value)
+            self.assertEqual(bv, b.output.value)
+
+        step(0.00, TMH, HI)
+        step(0.05, HI,  HI)
+        step(0.45, HI, THM)
+        step(0.50, HI, TML)
+        step(0.55, HI,  LO)
+        step(0.95, THM, LO)
+        step(1.00, TML, LO)
+        step(1.05, LO,  LO)
+        step(1.45, LO, TLM)
+        step(1.50, LO, TMH)
+        step(1.55, LO,  HI)
