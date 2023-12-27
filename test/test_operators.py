@@ -1,7 +1,7 @@
 import unittest
 
 from cpu4.simulator import simulator as s
-from cpu4.simulator.simulator import LO, HI, TLM, TMH, THM, TML, UNDEFINED, Z
+from cpu4.simulator.simulator import LO, HI, TLM, TMH, THM, TML, UNDEFINED, Z, UNKNOWN, CONFLICT
 
 
 class TestClock(unittest.TestCase):
@@ -233,40 +233,69 @@ class TestAnd(unittest.TestCase):
         j.set(LO, True)
         
         b = s.And(i, j, s.s(1), s.ms(100))
-        self.assertEqual(s.s(0), b.next_update())
-        b.update(s.s(0))
+        self.assertEqual(s.s(0), s.system.next_update())
+        s.system.update(s.s(0))
         self.assertEqual(LO, b.output.value)
-        self.assertEqual(None, b.next_update())
+        self.assertEqual(None, s.system.next_update())
 
         i.set(HI, True)
-        self.assertEqual(None, b.next_update())
+        self.assertEqual(None, s.system.next_update())
 
         i.set(LO, True)
         j.set(HI, True)
-        self.assertEqual(None, b.next_update())
+        self.assertEqual(None, s.system.next_update())
 
         i.set(HI, True)
-        self.assertEqual(s.s(0.95), b.next_update())
-        b.update(s.s(0.95))
+        self.assertEqual(s.s(0.95), s.system.next_update())
+        s.system.update(s.s(0.95))
         self.assertEqual(TLM, b.output.value)
-        self.assertEqual(s.s(0.05), b.next_update())
-        b.update(s.s(0.05))
+        self.assertEqual(s.s(0.05), s.system.next_update())
+        s.system.update(s.s(0.05))
         self.assertEqual(TMH, b.output.value)
-        self.assertEqual(s.s(0.05), b.next_update())
-        b.update(s.s(0.05))
+        self.assertEqual(s.s(0.05), s.system.next_update())
+        s.system.update(s.s(0.05))
         self.assertEqual(HI, b.output.value)
 
         i.set(LO, True)
         j.set(LO, True)
-        self.assertEqual(s.s(0.95), b.next_update())
-        b.update(s.s(0.95))
+        self.assertEqual(s.s(0.95), s.system.next_update())
+        s.system.update(s.s(0.95))
         self.assertEqual(THM, b.output.value)
-        self.assertEqual(s.s(0.05), b.next_update())
-        b.update(s.s(0.05))
+        self.assertEqual(s.s(0.05), s.system.next_update())
+        s.system.update(s.s(0.05))
         self.assertEqual(TML, b.output.value)
-        self.assertEqual(s.s(0.05), b.next_update())
-        b.update(s.s(0.05))
+        self.assertEqual(s.s(0.05), s.system.next_update())
+        s.system.update(s.s(0.05))
         self.assertEqual(LO, b.output.value)
+
+    def test_error(self):
+        s.system.clear()
+        
+        i = s.State()
+        i.set(LO, True)
+        
+        j = s.State()
+        j.set(LO, True)
+        
+        b = s.And(i, j, s.s(1), s.ms(100))
+        s.system.step()
+
+        i.set(Z)
+        s.system.step()
+        self.assertEqual(UNKNOWN, b.output.value)
+
+        i.set(LO)
+        s.system.step()
+        self.assertEqual(LO, b.output.value)
+        i.set(CONFLICT)
+        s.system.step()
+        self.assertEqual(UNKNOWN, b.output.value)
+
+        i.set(LO)
+        s.system.step()
+        i.set(UNKNOWN)
+        s.system.step()
+        self.assertEqual(UNKNOWN, b.output.value)
 
 class TestCombinations(unittest.TestCase):
     def test_buffered_clock(self):

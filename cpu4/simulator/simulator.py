@@ -6,6 +6,9 @@ class Timestamp:
     def __init__(self, nanoseconds: int):
         self.t = nanoseconds
     
+    def __repr__(self):
+        return f'Timestamp({repr(self.t / 1e9)})'
+    
     def __iadd__(self, dt: 'Duration'):
         self.t += dt.d
         return self
@@ -62,6 +65,9 @@ class Frequency:
     def __init__(self, hertz: float) -> None:
         self.f = hertz
     
+    def __repr__(self):
+        return f'Frequency({repr(self.f)})'
+    
     def to_duration(self) -> Duration:
         return s(1.0 / self.f)
 
@@ -82,25 +88,40 @@ TMH = 'TMH'
 THM = 'THM'
 TML = 'TML'
 Z = 'Z'
+CONFLICT = 'X'
+UNKNOWN = '?'
 UNDEFINED = 'U'
 
 class System:
     def __init__(self, m=0.5) -> None:
+        self._n = 0
         self.m = m
         self.clear()
 
     def register_element(self, element, name):
-        assert name not in self.elements.keys()
-        self.elements[name] = element
+        uname = f'{name}_{self._n}'
+        self._n += 1
+        assert uname not in self.elements.keys()
+        self.elements[uname] = element
     
     def register_state(self, state, name):
-        assert name not in self.states.keys()
-        self.states[name] = state
+        uname = f'{name}_{self._n}'
+        self._n += 1
+        assert uname not in self.states.keys()
+        self.states[uname] = state
     
     def clear(self):
         self.timestamp = Timestamp(0)
         self.elements = {}
         self.states = {}
+    
+    def next_update(self):
+        dts = [element.next_update() for element in self.elements.values()]
+        dts = [dt for dt in dts if dt is not None]
+        if len(dts) == 0:
+            return None
+        current_dt = min((dt.d for dt in dts if dt is not None))
+        return Duration(current_dt)
     
     def update(self, dt: Duration):
         for element in self.elements.values():
@@ -108,15 +129,17 @@ class System:
         self.timestamp += dt
     
     def step(self):
-        dts = [element.next_update() for element in self.elements.values()]
-        current_dt = min((dt.d for dt in dts if dt is not None))
-        self.update(Duration(current_dt))
+        current_dt = self.next_update()
+        self.update(current_dt)
 
 class State:
     def __init__(self) -> None:
         self.value = UNDEFINED
         self.is_driving = False
-    
+        
+    def __repr__(self):
+        return f'State({repr(self.value)}, {repr(self.is_driving)})'
+
     def set(self, value, drive=False):
         self.is_driving = drive
         self.value = value
@@ -224,17 +247,25 @@ class Buffer:
     def next_update(self):
         output = self.input.logic_level()
         if self.previous_output != output:
-            if self.previous_output == UNDEFINED:
+            if self.previous_output == UNDEFINED and output in [LO, HI, UNKNOWN]:
                 # Initialization is "free"
                 self.transitions.append((output, Duration(0)))
             elif output == LO:
-                self.transitions.append((THM, self.tp - (1 - system.m) * self.tt))
-                self.transitions.append((TML, self.tp))
-                self.transitions.append((LO, self.tp + system.m * self.tt))
+                if self.previous_output == UNKNOWN:
+                    self.transitions.append((LO, self.tp))
+                else:
+                    self.transitions.append((THM, self.tp - (1 - system.m) * self.tt))
+                    self.transitions.append((TML, self.tp))
+                    self.transitions.append((LO, self.tp + system.m * self.tt))
             elif output == HI:
-                self.transitions.append((TLM, self.tp - (1 - system.m) * self.tt))
-                self.transitions.append((TMH, self.tp))
-                self.transitions.append((HI, self.tp + system.m * self.tt))
+                if self.previous_output == UNKNOWN:
+                    self.transitions.append((HI, self.tp))
+                else:
+                    self.transitions.append((TLM, self.tp - (1 - system.m) * self.tt))
+                    self.transitions.append((TMH, self.tp))
+                    self.transitions.append((HI, self.tp + system.m * self.tt))
+            elif output == UNKNOWN:
+                self.transitions.append((UNKNOWN, self.tp))
             else:
                 assert False
             self.previous_output = output
@@ -260,17 +291,10 @@ class Buffer:
 
 class Not:
     def __init__(self, input: State, tp: Duration, tt: Duration):
-        assert tt < tp
-        self.tp = tp
-        self.tt = tt
-        
         self.input = input
-        
-        self.output = State()
-        self.output.set(UNDEFINED, True)
-        self.previous_output = UNDEFINED
-        
-        self.transitions = []
+        self._output = State()
+        self._buffer = Buffer(self._output, tp, tt)
+        self.output = self._buffer.output
 
         system.register_element(self, 'inverter')
         system.register_state(self.output, 'inverter.output')
@@ -278,106 +302,40 @@ class Not:
     def next_update(self):
         i = self.input.logic_level()
         output = LO if i == HI else HI
-        if self.previous_output != output:
-            if output == LO:
-                # Initialization is "free"
-                if self.previous_output == UNDEFINED:
-                    self.transitions.append((LO, Duration(0)))
-                else:
-                    self.transitions.append((THM, self.tp - (1 - system.m) * self.tt))
-                    self.transitions.append((TML, self.tp))
-                    self.transitions.append((LO, self.tp + system.m * self.tt))
-            elif output == HI:
-                # Initialization is "free"
-                if self.previous_output == UNDEFINED:
-                    self.transitions.append((HI, Duration(0)))
-                else:
-                    self.transitions.append((TLM, self.tp - (1 - system.m) * self.tt))
-                    self.transitions.append((TMH, self.tp))
-                    self.transitions.append((HI, self.tp + system.m * self.tt))
-            else:
-                assert False
-            self.previous_output = output
-        if len(self.transitions) > 0:
-            _, dt = self.transitions[0]
-            return dt
-        else:
-            return None
+        self._output.set(output, True)
+        return self._buffer.next_update()
     
     def update(self, dt: Duration):
-        if len(self.transitions) == 0:
-            return
-        transitions = []
-        for value, dt_transition in self.transitions:
-            assert dt <= dt_transition
-            dt_transition -= dt
-            if dt_transition <= Duration(0):
-                self.output.set(value, True)
-            else:
-                transitions.append((value, dt_transition))
-        self.transitions = transitions
+        return None
 
 
 class And:
     def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
-        assert tt < tp
-        self.tp = tp
-        self.tt = tt
-        
         self.a = input_a
         self.b = input_b
         
-        self.output = State()
-        self.output.set(UNDEFINED, True)
-        self.previous_output = UNDEFINED
-        
-        self.transitions = []
+        self._output = State()
+        self._buffer = Buffer(self._output, tp, tt)
+        self.output = self._buffer.output
 
-        system.register_element(self, 'inverter')
-        system.register_state(self.output, 'inverter.output')
+        system.register_element(self, 'and')
+        system.register_state(self.output, 'and.output')
 
     def next_update(self):
         a = self.a.logic_level()
         b = self.b.logic_level()
-        output = HI if a == HI and b == HI else LO
-        if self.previous_output != output:
-            if output == LO:
-                # Initialization is "free"
-                if self.previous_output == UNDEFINED:
-                    self.transitions.append((LO, Duration(0)))
-                else:
-                    self.transitions.append((THM, self.tp - (1 - system.m) * self.tt))
-                    self.transitions.append((TML, self.tp))
-                    self.transitions.append((LO, self.tp + system.m * self.tt))
-            elif output == HI:
-                # Initialization is "free"
-                if self.previous_output == UNDEFINED:
-                    self.transitions.append((HI, Duration(0)))
-                else:
-                    self.transitions.append((TLM, self.tp - (1 - system.m) * self.tt))
-                    self.transitions.append((TMH, self.tp))
-                    self.transitions.append((HI, self.tp + system.m * self.tt))
-            else:
-                assert False
-            self.previous_output = output
-        if len(self.transitions) > 0:
-            _, dt = self.transitions[0]
-            return dt
-        else:
-            return None
+        try:
+            output = {(LO, LO): LO,
+                      (LO, HI): LO,
+                      (HI, LO): LO,
+                      (HI, HI): HI}[a, b]
+        except KeyError:
+            output = UNKNOWN
+        self._output.set(output, True)
+        return self._buffer.next_update()
     
     def update(self, dt: Duration):
-        if len(self.transitions) == 0:
-            return
-        transitions = []
-        for value, dt_transition in self.transitions:
-            assert dt <= dt_transition
-            dt_transition -= dt
-            if dt_transition <= Duration(0):
-                self.output.set(value, True)
-            else:
-                transitions.append((value, dt_transition))
-        self.transitions = transitions
+        return
 
 class ThreeState(Buffer):
     def __init__(self, input: State, n_oe: State, t_en: Duration, t_dis: Duration):
