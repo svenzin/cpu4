@@ -1,7 +1,7 @@
 import unittest
 
 from cpu4.simulator import simulator as s
-from cpu4.simulator.simulator import LO, HI, TLM, TMH, THM, TML, UNDEFINED
+from cpu4.simulator.simulator import LO, HI, TLM, TMH, THM, TML, UNDEFINED, Z
 
 
 class TestClock(unittest.TestCase):
@@ -158,6 +158,116 @@ class TestBuffer(unittest.TestCase):
         b.update(s.s(0.05))                             # t=1.55, output TML>LO
         self.assertEqual(LO, b.output.value)
 
+class Test3State(unittest.TestCase):
+    def test_simple(self):
+        s.system.clear()
+        
+        i = s.State()
+        i.set(LO, True)
+        
+        n_oe = s.State()
+        n_oe.set(LO, True)
+        
+        b = s.ThreeState(i, n_oe, s.ms(100), s.ms(200))
+        self.assertEqual(s.s(0), b.next_update())
+        b.update(s.s(0))
+        self.assertEqual(LO, b.output.value)
+        self.assertEqual(None, b.next_update())
+
+        n_oe.set(HI, True)
+        self.assertEqual(s.ms(200), b.next_update())
+        b.update(s.ms(200))
+        self.assertEqual(Z, b.output.value)
+        self.assertEqual(None, b.next_update())
+
+        n_oe.set(LO, True)
+        self.assertEqual(s.ms(100), b.next_update())
+        b.update(s.ms(100))
+        self.assertEqual(LO, b.output.value)
+        self.assertEqual(None, b.next_update())
+
+    def test_multiple_changes(self):
+        s.system.clear()
+        
+        i = s.State()
+        i.set(LO, True)
+        
+        n_oe = s.State()
+        n_oe.set(LO, True)
+        
+        b = s.ThreeState(i, n_oe, s.ms(100), s.ms(200))
+        self.assertEqual(s.ms(0), b.next_update()) # initialization
+        b.update(s.s(0))
+
+        # disable then re-enable before fully disabled
+        n_oe.set(HI, True)
+        self.assertEqual(s.ms(200), b.next_update())
+        b.update(s.ms(150))
+        n_oe.set(LO, True)
+        self.assertEqual(s.ms(50), b.next_update())
+        b.update(s.ms(50))
+        self.assertEqual(Z, b.output.value)
+        self.assertEqual(s.ms(50), b.next_update())
+        b.update(s.ms(50))
+        self.assertEqual(LO, b.output.value)
+        self.assertEqual(None, b.next_update())
+
+        # disable then re-enable before disabling started
+        n_oe.set(HI, True)
+        self.assertEqual(s.ms(200), b.next_update())
+        b.update(s.ms(50))
+        n_oe.set(LO, True)
+        self.assertEqual(s.ms(100), b.next_update())
+        b.update(s.ms(100))
+        self.assertEqual(LO, b.output.value)
+        self.assertEqual(None, b.next_update())
+
+class TestAnd(unittest.TestCase):
+    def test_simple(self):
+        s.system.clear()
+        
+        i = s.State()
+        i.set(LO, True)
+        
+        j = s.State()
+        j.set(LO, True)
+        
+        b = s.And(i, j, s.s(1), s.ms(100))
+        self.assertEqual(s.s(0), b.next_update())
+        b.update(s.s(0))
+        self.assertEqual(LO, b.output.value)
+        self.assertEqual(None, b.next_update())
+
+        i.set(HI, True)
+        self.assertEqual(None, b.next_update())
+
+        i.set(LO, True)
+        j.set(HI, True)
+        self.assertEqual(None, b.next_update())
+
+        i.set(HI, True)
+        self.assertEqual(s.s(0.95), b.next_update())
+        b.update(s.s(0.95))
+        self.assertEqual(TLM, b.output.value)
+        self.assertEqual(s.s(0.05), b.next_update())
+        b.update(s.s(0.05))
+        self.assertEqual(TMH, b.output.value)
+        self.assertEqual(s.s(0.05), b.next_update())
+        b.update(s.s(0.05))
+        self.assertEqual(HI, b.output.value)
+
+        i.set(LO, True)
+        j.set(LO, True)
+        self.assertEqual(s.s(0.95), b.next_update())
+        b.update(s.s(0.95))
+        self.assertEqual(THM, b.output.value)
+        self.assertEqual(s.s(0.05), b.next_update())
+        b.update(s.s(0.05))
+        self.assertEqual(TML, b.output.value)
+        self.assertEqual(s.s(0.05), b.next_update())
+        b.update(s.s(0.05))
+        self.assertEqual(LO, b.output.value)
+
 class TestCombinations(unittest.TestCase):
     def test_buffered_clock(self):
         s.system.clear()
@@ -179,6 +289,36 @@ class TestCombinations(unittest.TestCase):
         step(0.95, THM, HI)
         step(1.00, TML, HI)
         step(1.05, LO,  HI)
+        step(1.45, LO, THM)
+        step(1.50, LO, TML)
+        step(1.55, LO,  LO)
+
+    def test_3s_buffered_clock(self):
+        s.system.clear()
+
+        n_oe = s.State()
+        n_oe.set(LO, True)
+        c = s.Clock(s.hz(0.5), tt=s.ms(100))
+        b = s.Buffer3S(c.clock, s.ms(500), s.ms(100), n_oe, s.ms(100), s.ms(100))
+
+        def step(t, cv, bv):
+            s.system.step()
+            self.assertEqual(s.s(t).d, s.system.timestamp.t)
+            self.assertEqual(cv, c.clock.value)
+            self.assertEqual(bv, b.output.value)
+
+        step(0.00, TMH, LO)
+        step(0.05, HI,  LO)
+        step(0.45, HI, TLM)
+        step(0.50, HI, TMH)
+        n_oe.set(HI, True)
+        step(0.55, HI,  HI)
+        step(0.60, HI,  Z)
+        step(0.95, THM, Z)
+        step(1.00, TML, Z)
+        n_oe.set(LO, True)
+        step(1.05, LO,  Z)
+        step(1.10, LO,  HI)
         step(1.45, LO, THM)
         step(1.50, LO, TML)
         step(1.55, LO,  LO)
