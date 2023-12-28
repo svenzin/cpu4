@@ -297,6 +297,74 @@ class TestAnd(unittest.TestCase):
         s.system.step()
         self.assertEqual(UNKNOWN, b.output.value)
 
+class TestDecoder(unittest.TestCase):
+    def assertStatesEqual(self, expected, actual):
+        self.assertEqual(expected, [s.value for s in actual])
+
+    def assertTimestamp(self, d):
+        self.assertEqual(d.d, s.system.timestamp.t)
+
+    def test_1_to_2(self):
+        s.system.clear()
+
+        en = s.State()
+        en.set(LO, True)
+        
+        i0 = s.State()
+        i0.set(LO, True)
+        
+        d = s.Decoder([i0], en, s.s(1), s.s(0.5), s.s(0.1))
+        self.assertEqual(2, len(d.outputs))
+        
+        s.system.step()
+        self.assertTimestamp(s.s(0))
+        self.assertStatesEqual([LO, LO], d.outputs)
+        
+        en.set(HI, True)
+        s.system.step()
+        self.assertTimestamp(s.s(0.45))
+        self.assertStatesEqual([TLM, LO], d.outputs)
+        s.system.step()
+        self.assertTimestamp(s.s(0.5))
+        self.assertStatesEqual([TMH, LO], d.outputs)
+        s.system.step()
+        self.assertTimestamp(s.s(0.55))
+        self.assertStatesEqual([HI, LO], d.outputs)
+        
+        i0.set(HI, True)
+        s.system.step()
+        self.assertTimestamp(s.s(1.45))
+        self.assertStatesEqual([THM, TLM], d.outputs)
+        s.system.step()
+        self.assertTimestamp(s.s(1.5))
+        self.assertStatesEqual([TML, TMH], d.outputs)
+        s.system.step()
+        self.assertTimestamp(s.s(1.55))
+        self.assertStatesEqual([LO, HI], d.outputs)
+        
+        en.set(LO, True)
+        s.system.step()
+        self.assertTimestamp(s.s(1.95))
+        self.assertStatesEqual([LO, THM], d.outputs)
+        s.system.step()
+        self.assertTimestamp(s.s(2))
+        self.assertStatesEqual([LO, TML], d.outputs)
+        s.system.step()
+        self.assertTimestamp(s.s(2.05))
+        self.assertStatesEqual([LO, LO], d.outputs)
+        
+        en.set(UNKNOWN, True)
+        s.system.step()
+        self.assertStatesEqual([UNKNOWN, UNKNOWN], d.outputs)
+        
+        en.set(HI, True)
+        s.system.step()
+        self.assertStatesEqual([LO, HI], d.outputs)
+        
+        i0.set(UNKNOWN, True)
+        s.system.step()
+        self.assertStatesEqual([UNKNOWN, UNKNOWN], d.outputs)
+
 class TestCombinations(unittest.TestCase):
     def test_buffered_clock(self):
         s.system.clear()

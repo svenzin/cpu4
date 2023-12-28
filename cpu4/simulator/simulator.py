@@ -130,7 +130,9 @@ class System:
     
     def step(self):
         current_dt = self.next_update()
-        self.update(current_dt)
+        if current_dt is not None:
+            self.update(current_dt)
+        return current_dt
 
 class State:
     def __init__(self) -> None:
@@ -309,8 +311,10 @@ class Not:
         return None
 
 
-class And:
-    def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
+class BinaryOp:
+    def __init__(self, op_table, input_a: State, input_b: State, tp: Duration, tt: Duration):
+        self.op = op_table
+
         self.a = input_a
         self.b = input_b
         
@@ -318,17 +322,14 @@ class And:
         self._buffer = Buffer(self._output, tp, tt)
         self.output = self._buffer.output
 
-        system.register_element(self, 'and')
-        system.register_state(self.output, 'and.output')
+        system.register_element(self, 'binop')
+        system.register_state(self.output, 'binop.output')
 
     def next_update(self):
         a = self.a.logic_level()
         b = self.b.logic_level()
         try:
-            output = {(LO, LO): LO,
-                      (LO, HI): LO,
-                      (HI, LO): LO,
-                      (HI, HI): HI}[a, b]
+            output = self.op[a, b]
         except KeyError:
             output = UNKNOWN
         self._output.set(output, True)
@@ -336,6 +337,132 @@ class And:
     
     def update(self, dt: Duration):
         return
+
+class And(BinaryOp):
+    def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
+        super().__init__({(LO, LO): LO,
+                          (LO, HI): LO,
+                          (HI, LO): LO,
+                          (HI, HI): HI}, input_a, input_b, tp, tt)
+
+class Or(BinaryOp):
+    def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
+        super().__init__({(LO, LO): LO,
+                          (LO, HI): HI,
+                          (HI, LO): HI,
+                          (HI, HI): HI}, input_a, input_b, tp, tt)
+
+class Decoder:
+    def __init__(self, inputs: list[State], en: State, tp_data: Duration, tp_en: Duration, tt: Duration):
+        self.inputs = inputs
+
+        self.output_count = 2 ** len(inputs)
+        self._outputs = [State() for _ in range(self.output_count)]
+        
+        self._buffers = [Buffer(o, tp_data, tt) for o in self._outputs]
+
+        disabled = State()
+        disabled.set(LO, True)
+        self._enablers = [Enabler(b.output, en, tp_en, tp_en, tt, tt, disabled) for b in self._buffers]
+        
+        self.outputs = [e.output for e in self._enablers]
+    
+        system.register_element(self, 'decoder')
+        for o in self.outputs:
+            system.register_state(o, 'decoder.output')
+
+    def next_update(self):
+        inputs = [i.logic_level() for i in self.inputs]
+        try:
+            value_map = {LO: 0, HI: 1}
+            index = sum((2 ** i * value_map[value] for i, value in enumerate(inputs)))
+        except KeyError:
+            index = None
+        if index is None:
+            for o in self._outputs:
+                o.set(UNKNOWN, True)
+        else:
+            for i, o in enumerate(self._outputs):
+                if i == index:
+                    o.set(HI, True)
+                else:
+                    o.set(LO, True)
+        dt_buffers = [b.next_update() for b in self._buffers]
+        dt_enablers = [e.next_update() for e in self._enablers]
+        return min([dt for dt in dt_buffers + dt_enablers if dt is not None], default=None)
+    
+    def update(self, dt: Duration):
+        return
+
+class Enabler:
+    ENABLED, T_ENABLED_M, T_M_DISABLED, DISABLED, T_DISABLED_M, T_M_ENABLED = range(6)
+    def __init__(self, input: State, en: State, tp_en: Duration, tp_dis: Duration, tt_en: Duration, tt_dis: Duration, disabled: State):
+        self.input = input
+
+        self.previous_en = UNDEFINED
+        self.en = en
+        self.tp_en = tp_en
+        self.tp_dis = tp_dis
+        self.tt_en = tt_en
+        self.tt_dis = tt_dis
+        
+        self.output_enabled = Enabler.DISABLED
+        self.output = State()
+        self.output.set(UNDEFINED, True)
+        
+        self.disabled_state = disabled
+        
+        self.transitions = []
+
+        system.register_element(self, 'enabler')
+        system.register_state(self.output, 'enabler.output')
+
+    def append(self, output_enabled, dt):
+        while len(self.transitions) > 0 and self.transitions[-1][1] > dt:
+            self.transitions.pop()
+        self.transitions.append((output_enabled, dt))
+
+    def next_update(self):
+        en = self.en.logic_level()
+        if self.previous_en != en:
+            if en == HI:
+                if self.previous_en == UNDEFINED:
+                    self.append(Enabler.ENABLED, Duration(0))
+                else:
+                    self.append(Enabler.T_DISABLED_M, self.tp_en)
+                    self.append(Enabler.T_M_ENABLED, self.tp_en)
+                    self.append(Enabler.ENABLED, self.tp_en)
+            elif en == LO:
+                if self.previous_en == UNDEFINED:
+                    self.append(Enabler.DISABLED, Duration(0))
+                else:
+                    self.append(Enabler.T_ENABLED_M, self.tp_dis)
+                    self.append(Enabler.T_M_DISABLED, self.tp_dis)
+                    self.append(Enabler.DISABLED, self.tp_dis)
+            else:
+                assert False
+            self.previous_en = en
+        if len(self.transitions) > 0:
+            _, dt = self.transitions[0]
+            return dt
+        else:
+            return None
+    
+    def update(self, dt: Duration):
+        if len(self.transitions) > 0:
+            transitions = []
+            for value, dt_transition in self.transitions:
+                assert dt <= dt_transition
+                dt_transition -= dt
+                if dt_transition <= Duration(0):
+                    self.output_enabled = value
+                else:
+                    transitions.append((value, dt_transition))
+            self.transitions = transitions
+        if self.output_enabled:
+            self.output.set(self.input.value, True)
+        else:
+            self.output.set(self.disabled_state.value, False)
 
 class ThreeState(Buffer):
     def __init__(self, input: State, n_oe: State, t_en: Duration, t_dis: Duration):
