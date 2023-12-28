@@ -1,5 +1,6 @@
 from typing import Optional
 import math
+import itertools
 
 # time
 class Timestamp:
@@ -225,7 +226,7 @@ class Clock:
                 assert False
 
 class Operator:
-    def __init__(self, inputs: list[State], op: dict[tuple, tuple], tp: Duration, tt: Duration):
+    def __init__(self, inputs: list[State], op: dict[tuple, tuple], tp: Duration, tt: Duration, name='operator'):
         assert tt <= tp
         self.tp = tp
         self.tt = tt
@@ -243,9 +244,9 @@ class Operator:
         
         self.transitions = []
 
-        system.register_element(self, 'operator')
+        system.register_element(self, name)
         for o in self.outputs:
-            system.register_state(o, 'operator.output')
+            system.register_state(o, f'{name}.output')
 
     def next_update(self):
         inputs = tuple((i.logic_level() for i in self.inputs))
@@ -280,25 +281,21 @@ class Operator:
 class Buffer(Operator):
     def __init__(self, input: State, tp: Duration, tt: Duration):
         super().__init__([input], {(LO,): (LO,),
-                                   (HI,): (HI,)}, tp, tt)
+                                   (HI,): (HI,)}, tp, tt, 'buffer')
         self.output = self.outputs[0]
-        # system.register_element(self, 'inverter')
-        # system.register_state(self.output, 'inverter.output')
 
 class Inverter(Operator):
     def __init__(self, input: State, tp: Duration, tt: Duration):
         super().__init__([input], {(LO,): (HI,),
-                                   (HI,): (LO,)}, tp, tt)
+                                   (HI,): (LO,)}, tp, tt, 'inverter')
         self.output = self.outputs[0]
-        # system.register_element(self, 'inverter')
-        # system.register_state(self.output, 'inverter.output')
 
 class And(Operator):
     def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
         super().__init__([input_a, input_b], {(LO, LO): (LO,),
                                               (LO, HI): (LO,),
                                               (HI, LO): (LO,),
-                                              (HI, HI): (HI,)}, tp, tt)
+                                              (HI, HI): (HI,)}, tp, tt, 'and')
         self.output = self.outputs[0]
 
 class Or(Operator):
@@ -306,50 +303,28 @@ class Or(Operator):
         super().__init__([input_a, input_b], {(LO, LO): (LO,),
                                               (LO, HI): (HI,),
                                               (HI, LO): (HI,),
-                                              (HI, HI): (HI,)}, tp, tt)
+                                              (HI, HI): (HI,)}, tp, tt, 'or')
         self.output = self.outputs[0]
 
-class Decoder:
+class DecoderBase(Operator):
+    def __init__(self, inputs: list[State], tp: Duration, tt: Duration):
+        self.input_count = len(inputs)
+        self.output_count = 2 ** self.input_count
+        
+        decoder_map = {}
+        coordinates = self.input_count * [[LO, HI]]
+        for index, input in enumerate(itertools.product(*coordinates)):
+            output = self.output_count * [LO]
+            output[index] = HI
+            decoder_map[input] = output
+
+        super().__init__(inputs, decoder_map, tp, tt, 'decoder')
+
+class Decoder(DecoderBase):
     def __init__(self, inputs: list[State], en: State, tp_data: Duration, tp_en: Duration, tt: Duration):
-        self.inputs = inputs
-
-        self.output_count = 2 ** len(inputs)
-        self._outputs = [State() for _ in range(self.output_count)]
-        
-        self._buffers = [Buffer(o, tp_data, tt) for o in self._outputs]
-
-        disabled = State()
-        disabled.set(LO, True)
-        self._enablers = [Enabler(b.output, en, tp_en, tp_en, tt, tt, disabled) for b in self._buffers]
-        
-        self.outputs = [e.output for e in self._enablers]
-    
-        system.register_element(self, 'decoder')
-        for o in self.outputs:
-            system.register_state(o, 'decoder.output')
-
-    def next_update(self):
-        inputs = [i.logic_level() for i in self.inputs]
-        try:
-            value_map = {LO: 0, HI: 1}
-            index = sum((2 ** i * value_map[value] for i, value in enumerate(inputs)))
-        except KeyError:
-            index = None
-        if index is None:
-            for o in self._outputs:
-                o.set(UNKNOWN, True)
-        else:
-            for i, o in enumerate(self._outputs):
-                if i == index:
-                    o.set(HI, True)
-                else:
-                    o.set(LO, True)
-        dt_buffers = [b.next_update() for b in self._buffers]
-        dt_enablers = [e.next_update() for e in self._enablers]
-        return min([dt for dt in dt_buffers + dt_enablers if dt is not None], default=None)
-    
-    def update(self, dt: Duration):
-        return
+        self.decoder = DecoderBase(inputs, tp_data, tt)
+        self.enablers = [Enabler(o, en, tp_en, tp_en, tt, tt, STATE_LO) for o in self.decoder.outputs]
+        self.outputs = [e.output for e in self.enablers]
 
 class Enabler:
     def __init__(self, input: State, en: State, tp_en: Duration, tp_dis: Duration, tt_en: Duration, tt_dis: Duration, disabled: BaseState):
