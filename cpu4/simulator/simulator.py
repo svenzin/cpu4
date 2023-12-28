@@ -178,16 +178,17 @@ class Clock:
         self.t_hi = duty * self.p
         self.t_lo = (1 - duty) * self.p
         self.clock = State()
-        # apply phase using updates
-        end_hi = self.t_hi
-        end_lo = self.t_hi + self.t_lo
-        self.dt = (1 - phase / 360) * self.p
-        if self.dt <= end_hi:
-            self.dt = end_hi - self.dt
+        dt_phase = phase / 360 * self.p
+        if dt_phase == Duration(0):
+            self.dt = self.t_hi
             self.clock.set(HI, True)
-        elif self.dt <= end_lo:
-            self.dt = end_lo - self.dt
+        elif dt_phase <= self.t_lo:
+            self.dt = dt_phase
             self.clock.set(LO, True)
+        else:
+            self.dt = dt_phase - self.t_lo
+            assert self.dt <= self.t_hi
+            self.clock.set(HI, True)
         assert self.dt >= Duration(0)
         assert self.clock.value in [HI, LO]
         system.register_element(self, 'clock')
@@ -209,38 +210,39 @@ class Clock:
             else:
                 assert False
 
-class Buffer:
-    def __init__(self, input: State, tp: Duration, tt: Duration):
+class Operator:
+    def __init__(self, inputs: list[State], op: dict[tuple, tuple], tp: Duration, tt: Duration):
         assert tt <= tp
         self.tp = tp
         self.tt = tt
         
-        self.input = input
-        
-        self.output = State()
-        self.output.set(UNDEFINED, True)
-        self.previous_output = UNDEFINED
+        self.input_count = len(inputs)
+        assert all(self.input_count == len(o) for o in op.keys())
+        self.inputs = inputs
+
+        self.op = op
+
+        self.output_count = len(next(iter(op.values())))
+        assert all(self.output_count == len(o) for o in op.values())
+        self.outputs = [State() for _ in range(self.output_count)]
+        self.previous_outputs = UNDEFINED # self.output_count * [UNKNOWN]
         
         self.transitions = []
 
-        system.register_element(self, 'buffer')
-        system.register_state(self.output, 'buffer.output')
+        system.register_element(self, 'operator')
+        for o in self.outputs:
+            system.register_state(o, 'operator.output')
 
     def next_update(self):
-        output = self.input.logic_level()
-        if self.previous_output != output:
-            if self.previous_output == UNDEFINED and output in [LO, HI, UNKNOWN]:
-                # Initialization is "free"
-                self.transitions.append((output, Duration(0)))
-            elif output == LO:
-                self.transitions.append((LO, self.tp))
-            elif output == HI:
-                self.transitions.append((HI, self.tp))
-            elif output == UNKNOWN:
-                self.transitions.append((UNKNOWN, self.tp))
-            else:
-                assert False
-            self.previous_output = output
+        inputs = tuple((i.logic_level() for i in self.inputs))
+        if any((i != UNDEFINED for i in inputs)) or self.previous_outputs != UNDEFINED:
+            try:
+                outputs = self.op[inputs]
+            except KeyError:
+                outputs = self.output_count * [UNKNOWN]
+            if self.previous_outputs != outputs:
+                self.transitions.append((outputs, self.tp))
+                self.previous_outputs = outputs
         if len(self.transitions) > 0:
             _, dt = self.transitions[0]
             return dt
@@ -251,76 +253,47 @@ class Buffer:
         if len(self.transitions) == 0:
             return
         transitions = []
-        for value, dt_transition in self.transitions:
+        for values, dt_transition in self.transitions:
             assert dt <= dt_transition
             dt_transition -= dt
             if dt_transition <= Duration(0):
-                self.output.set(value, True)
+                for output, value in zip(self.outputs, values):
+                    output.set(value, True)
             else:
-                transitions.append((value, dt_transition))
+                transitions.append((values, dt_transition))
         self.transitions = transitions
 
-
-class Not:
+class Buffer(Operator):
     def __init__(self, input: State, tp: Duration, tt: Duration):
-        self.input = input
-        self._output = State()
-        self._buffer = Buffer(self._output, tp, tt)
-        self.output = self._buffer.output
+        super().__init__([input], {(LO,): (LO,),
+                                   (HI,): (HI,)}, tp, tt)
+        self.output = self.outputs[0]
+        # system.register_element(self, 'inverter')
+        # system.register_state(self.output, 'inverter.output')
 
-        system.register_element(self, 'inverter')
-        system.register_state(self.output, 'inverter.output')
+class Inverter(Operator):
+    def __init__(self, input: State, tp: Duration, tt: Duration):
+        super().__init__([input], {(LO,): (HI,),
+                                   (HI,): (LO,)}, tp, tt)
+        self.output = self.outputs[0]
+        # system.register_element(self, 'inverter')
+        # system.register_state(self.output, 'inverter.output')
 
-    def next_update(self):
-        i = self.input.logic_level()
-        output = LO if i == HI else HI
-        self._output.set(output, True)
-        return self._buffer.next_update()
-    
-    def update(self, dt: Duration):
-        return None
-
-
-class BinaryOp:
-    def __init__(self, op_table, input_a: State, input_b: State, tp: Duration, tt: Duration):
-        self.op = op_table
-
-        self.a = input_a
-        self.b = input_b
-        
-        self._output = State()
-        self._buffer = Buffer(self._output, tp, tt)
-        self.output = self._buffer.output
-
-        system.register_element(self, 'binop')
-        system.register_state(self.output, 'binop.output')
-
-    def next_update(self):
-        a = self.a.logic_level()
-        b = self.b.logic_level()
-        try:
-            output = self.op[a, b]
-        except KeyError:
-            output = UNKNOWN
-        self._output.set(output, True)
-        return self._buffer.next_update()
-    
-    def update(self, dt: Duration):
-        return
-
-class And(BinaryOp):
+class And(Operator):
     def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
-        super().__init__({(LO, LO): LO,
-                          (LO, HI): LO,
-                          (HI, LO): LO,
-                          (HI, HI): HI}, input_a, input_b, tp, tt)
+        super().__init__([input_a, input_b], {(LO, LO): (LO,),
+                                              (LO, HI): (LO,),
+                                              (HI, LO): (LO,),
+                                              (HI, HI): (HI,)}, tp, tt)
+        self.output = self.outputs[0]
 
-class Or(BinaryOp):
+class Or(Operator):
     def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
-        super().__init__({(LO, LO): LO,
-                          (LO, HI): HI,
-                          (HI, LO): HI,
-                          (HI, HI): HI}, input_a, input_b, tp, tt)
+        super().__init__([input_a, input_b], {(LO, LO): (LO,),
+                                              (LO, HI): (HI,),
+                                              (HI, LO): (HI,),
+                                              (HI, HI): (HI,)}, tp, tt)
+        self.output = self.outputs[0]
 
 class Decoder:
     def __init__(self, inputs: list[State], en: State, tp_data: Duration, tp_en: Duration, tt: Duration):
@@ -396,19 +369,11 @@ class Enabler:
         en = self.en.logic_level()
         if self.previous_en != en:
             if en == HI:
-                if self.previous_en == UNDEFINED:
-                    self.append(True, Duration(0))
-                else:
-                    self.append(True, self.tp_en)
+                self.append(True, self.tp_en)
             elif en == LO:
-                if self.previous_en == UNDEFINED:
-                    self.append(False, Duration(0))
-                else:
-                    self.append(False, self.tp_dis)
+                self.append(False, self.tp_dis)
             else:
-                if self.previous_en == UNDEFINED:
-                    self.append(None, Duration(0))
-                elif self.previous_en == LO:
+                if self.previous_en == LO:
                     self.append(None, self.tp_en)
                 elif self.previous_en == HI:
                     self.append(None, self.tp_dis)

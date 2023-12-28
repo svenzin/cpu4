@@ -8,18 +8,18 @@ class TestClock(unittest.TestCase):
     def test_init_phase_0(self):
         s.system.clear()
         c = s.Clock(s.hz(1), tt=s.ms(200), phase=0)
-        self.assertEqual(LO, c.clock.value)
-        self.assertEqual(s.s(0), c.next_update())
-        c.update(s.s(0))
         self.assertEqual(HI, c.clock.value)
+        self.assertEqual(s.s(0.5), c.next_update())
+        c.update(s.s(0.5))
+        self.assertEqual(LO, c.clock.value)
 
     def test_init_phase_180(self):
         s.system.clear()
         c = s.Clock(s.hz(1), tt=s.ms(200), phase=180)
-        self.assertEqual(HI, c.clock.value)
-        self.assertEqual(s.s(0), c.next_update())
-        c.update(s.s(0))
         self.assertEqual(LO, c.clock.value)
+        self.assertEqual(s.s(0.5), c.next_update())
+        c.update(s.s(0.5))
+        self.assertEqual(HI, c.clock.value)
 
     def test_clock(self):
         s.system.clear()
@@ -53,9 +53,9 @@ class TestBuffer(unittest.TestCase):
         
         # Initial state
         i.set(LO, True)
-        self.assertEqual(s.s(0), b.next_update())
+        self.assertEqual(s.s(1), b.next_update())
         
-        b.update(s.s(0))
+        b.update(s.s(1))
         self.assertEqual(LO, b.output.value)
         self.assertEqual(None, b.next_update())
 
@@ -69,9 +69,9 @@ class TestBuffer(unittest.TestCase):
         
         # Initial state
         i.set(HI, True)
-        self.assertEqual(s.s(0), b.next_update())
+        self.assertEqual(s.s(1), b.next_update())
         
-        b.update(s.s(0))
+        b.update(s.s(1))
         self.assertEqual(HI, b.output.value)
         self.assertEqual(None, b.next_update())
 
@@ -124,8 +124,9 @@ class Test3State(unittest.TestCase):
         z = s.State()
         z.set(Z)
         b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), z)
-        self.assertEqual(s.s(0), b.next_update())
-        b.update(s.s(0))
+        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(s.s(0.1), b.next_update())
+        b.update(s.s(0.1))
         self.assertEqual(LO, b.output.value)
         self.assertEqual(None, b.next_update())
 
@@ -153,8 +154,8 @@ class Test3State(unittest.TestCase):
         z = s.State()
         z.set(Z)
         b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), z)
-        self.assertEqual(s.ms(0), b.next_update()) # initialization
-        b.update(s.s(0))
+        self.assertEqual(s.s(0.1), b.next_update()) # initialization
+        b.update(s.s(0.1))
 
         # disable then re-enable before fully disabled
         en.set(LO, True)
@@ -190,8 +191,9 @@ class TestAnd(unittest.TestCase):
         j.set(LO, True)
         
         b = s.And(i, j, s.s(1), s.ms(100))
-        self.assertEqual(s.s(0), s.system.next_update())
-        s.system.update(s.s(0))
+        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(s.s(1), s.system.next_update())
+        s.system.update(s.s(1))
         self.assertEqual(LO, b.output.value)
         self.assertEqual(None, s.system.next_update())
 
@@ -260,39 +262,40 @@ class TestDecoder(unittest.TestCase):
         
         d = s.Decoder([i0], en, s.s(1), s.s(0.5), s.s(0.1))
         self.assertEqual(2, len(d.outputs))
+        self.assertStatesEqual([UNDEFINED, UNDEFINED], d.outputs)
         
-        s.system.step()
-        self.assertTimestamp(s.s(0))
+        s.system.step() # outputs are disabled by en
+        self.assertTimestamp(s.s(0.5))
         self.assertStatesEqual([LO, LO], d.outputs)
         
         en.set(HI, True)
         s.system.step()
-        self.assertTimestamp(s.s(0.5))
+        self.assertTimestamp(s.s(1))
         self.assertStatesEqual([HI, LO], d.outputs)
         
         i0.set(HI, True)
         s.system.step()
-        self.assertTimestamp(s.s(1.5))
+        self.assertTimestamp(s.s(2))
         self.assertStatesEqual([LO, HI], d.outputs)
         
         en.set(LO, True)
         s.system.step()
-        self.assertTimestamp(s.s(2))
+        self.assertTimestamp(s.s(2.5))
         self.assertStatesEqual([LO, LO], d.outputs)
         
         en.set(UNKNOWN, True)
         s.system.step()
-        self.assertTimestamp(s.s(2.5))
+        self.assertTimestamp(s.s(3))
         self.assertStatesEqual([UNKNOWN, UNKNOWN], d.outputs)
         
         en.set(HI, True)
         s.system.step()
-        self.assertTimestamp(s.s(3.0))
+        self.assertTimestamp(s.s(3.5))
         self.assertStatesEqual([LO, HI], d.outputs)
         
         i0.set(UNKNOWN, True)
         s.system.step()
-        self.assertTimestamp(s.s(4.0))
+        self.assertTimestamp(s.s(4.5))
         self.assertStatesEqual([UNKNOWN, UNKNOWN], d.outputs)
 
 class TestCombinations(unittest.TestCase):
@@ -308,7 +311,8 @@ class TestCombinations(unittest.TestCase):
             self.assertEqual(cv, c.clock.value)
             self.assertEqual(bv, b.output.value)
 
-        step(0.00, HI, LO)
+        self.assertEqual(HI, c.clock.value)
+        self.assertEqual(UNDEFINED, b.output.value)
         step(0.50, HI, HI)
         step(1.00, LO, HI)
         step(1.50, LO, LO)
@@ -330,20 +334,22 @@ class TestCombinations(unittest.TestCase):
             self.assertEqual(cv, c.clock.value)
             self.assertEqual(bv, b.output.value)
 
-        step(0.00, HI, LO)
-        step(0.50, HI, HI)
+        self.assertEqual(HI, c.clock.value)
+        self.assertEqual(UNDEFINED, b.output.value)
+        step(0.1, HI, UNDEFINED) # output enabler updates @ 0.1 but buffer propagates only after 0.5
+        step(0.5, HI, HI)
         en.set(LO, True)
-        step(0.60, HI, Z)
-        step(1.00, LO, Z)
+        step(0.6, HI, Z)
+        step(1.0, LO, Z)
         en.set(HI, True)
-        step(1.10, LO, HI)
-        step(1.50, LO, LO)
+        step(1.1, LO, HI)
+        step(1.5, LO, LO)
 
     def test_inverted_clock(self):
         s.system.clear()
 
         c = s.Clock(s.hz(0.5), tt=s.ms(100))
-        b = s.Not(c.clock, s.ms(500), s.ms(100))
+        b = s.Inverter(c.clock, s.ms(500), s.ms(100))
 
         def step(t, cv, bv):
             s.system.step()
@@ -351,7 +357,8 @@ class TestCombinations(unittest.TestCase):
             self.assertEqual(cv, c.clock.value)
             self.assertEqual(bv, b.output.value)
 
-        step(0.00, HI, HI)
+        self.assertEqual(HI, c.clock.value)
+        self.assertEqual(UNDEFINED, b.output.value)
         step(0.50, HI, LO)
         step(1.00, LO, LO)
         step(1.50, LO, HI)
@@ -359,21 +366,25 @@ class TestCombinations(unittest.TestCase):
     def test_gated_clock(self):
         s.system.clear()
         c = s.Clock(s.hz(0.5), tt=s.ms(100))
-        n_c = s.Buffer(c.clock, s.ms(200), s.ms(100))
-        a = s.And(c.clock, n_c.output, s.ms(100), s.ms(100))
+        bc = s.Buffer(c.clock, s.ms(200), s.ms(100))
+        a = s.And(c.clock, bc.output, s.ms(100), s.ms(100))
         
         def step(t, cv, nv, av):
             s.system.step()
             self.assertEqual(s.s(t).d, s.system.timestamp.t)
             self.assertEqual(cv, c.clock.value)
-            self.assertEqual(nv, n_c.output.value)
+            self.assertEqual(nv, bc.output.value)
             self.assertEqual(av, a.output.value)
 
         # initialization is unreliable because
         # clock starts at LO>HI transition
-        c.update(s.Duration(0))
-        step(0.00, HI, HI, UNKNOWN)
-        step(0.10, HI, HI, HI)
+        # c.update(s.Duration(0))
+        self.assertEqual(HI, c.clock.value)
+        self.assertEqual(UNDEFINED, bc.output.value)
+        self.assertEqual(UNDEFINED, a.output.value)
+        step(0.10, HI, UNDEFINED, UNKNOWN)
+        step(0.20, HI, HI, UNKNOWN)
+        step(0.30, HI, HI, HI)
         step(1.00, LO, HI, HI)
         step(1.10, LO, HI, LO)
         step(1.20, LO, LO, LO)
