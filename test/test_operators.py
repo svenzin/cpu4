@@ -389,3 +389,68 @@ class TestCombinations(unittest.TestCase):
         step(2.30, HI, HI, HI)
         step(3.00, LO, HI, HI)
         step(3.10, LO, HI, LO)
+
+class TestMux(unittest.TestCase):
+    def assertStatesEqual(self, expected, actual):
+        self.assertEqual(expected, [s.value for s in actual])
+
+    def test_4_to_2(self):
+        s.system.clear()
+
+        is0, is1 = s.State(LO), s.State(LO)
+        os0 = s.State(LO)
+        i0, i1, i2, i3 = [s.State(LO) for _ in range(4)]
+        md = s.MuxerDemuxer([is0, is1], [i0, i1, i2, i3], [os0], s.s(1), s.s(0.1))
+
+        self.assertStatesEqual([UNDEFINED, UNDEFINED], md.outputs)
+        s.system.step()
+        self.assertStatesEqual([LO, LO], md.outputs)
+        i0.set(HI)
+        s.system.step()
+        self.assertStatesEqual([HI, LO], md.outputs)
+        os0.set(HI)
+        s.system.step()
+        self.assertStatesEqual([LO, HI], md.outputs)
+        is1.set(HI)
+        s.system.step()
+        self.assertStatesEqual([LO, LO], md.outputs)
+        i2.set(HI)
+        s.system.step()
+        self.assertStatesEqual([LO, HI], md.outputs)
+
+    def test_1_to_2(self):
+        s.system.clear()
+
+        os0 = s.State(LO)
+        i0 = s.State(LO)
+        md = s.MuxerDemuxer([], [i0], [os0], s.s(1), s.s(0.1))
+
+        self.assertStatesEqual([UNDEFINED, UNDEFINED], md.outputs)
+        s.system.step()
+        self.assertStatesEqual([LO, LO], md.outputs)
+        i0.set(HI)
+        s.system.step()
+        self.assertStatesEqual([HI, LO], md.outputs)
+        os0.set(HI)
+        s.system.step()
+        self.assertStatesEqual([LO, HI], md.outputs)
+
+    def test_4_to_1(self):
+        s.system.clear()
+
+        is0, is1 = s.State(LO), s.State(LO)
+        i0, i1, i2, i3 = [s.State(LO) for _ in range(4)]
+        md = s.MuxerDemuxer([is0, is1], [i0, i1, i2, i3], [], s.s(1), s.s(0.1))
+
+        self.assertStatesEqual([UNDEFINED], md.outputs)
+        s.system.step()
+        self.assertStatesEqual([LO], md.outputs)
+        i0.set(HI)
+        s.system.step()
+        self.assertStatesEqual([HI], md.outputs)
+        is1.set(HI)
+        s.system.step()
+        self.assertStatesEqual([LO], md.outputs)
+        i2.set(HI)
+        s.system.step()
+        self.assertStatesEqual([HI], md.outputs)

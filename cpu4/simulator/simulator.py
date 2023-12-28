@@ -155,10 +155,9 @@ class BaseState:
         return self.value
 
 class State(BaseState):
-    def __init__(self):
-        super().__init__(UNDEFINED, False)
+    def __init__(self, value=UNDEFINED, drive=False):
         self.timeline = []
-        self.set(UNDEFINED, False)
+        self.set(value, drive)
         
     def __repr__(self):
         return f'State({repr(self.value)}, {repr(self.is_driving)})'
@@ -170,9 +169,11 @@ class State(BaseState):
             assert self.timeline[-1][0] <= system.timestamp
         self.timeline.append((system.timestamp, self.value, self.is_driving))
 
+STATE_UNDEFINED = BaseState(UNDEFINED, False)
 STATE_LO = BaseState(LO, True)
 STATE_HI = BaseState(HI, True)
 STATE_Z = BaseState(Z, False)
+STATE_UNKOWN = BaseState(UNKNOWN, True)
 
 system = System()
 
@@ -187,13 +188,12 @@ class Clock:
         super().__init__()
         assert 0 < duty < 1
         assert 0 <= phase < 360
-        self.f = f
-        self.p = f.to_duration()
+        period = f.to_duration()
         self.tt = tt or s(0)
-        self.t_hi = duty * self.p
-        self.t_lo = (1 - duty) * self.p
+        self.t_hi = duty * period
+        self.t_lo = (1 - duty) * period
         self.clock = State()
-        dt_phase = phase / 360 * self.p
+        dt_phase = phase / 360 * period
         if dt_phase == Duration(0):
             self.dt = self.t_hi
             self.clock.set(HI, True)
@@ -240,7 +240,7 @@ class Operator:
         self.output_count = len(next(iter(op.values())))
         assert all(self.output_count == len(o) for o in op.values())
         self.outputs = [State() for _ in range(self.output_count)]
-        self.previous_outputs = UNDEFINED # self.output_count * [UNKNOWN]
+        self.previous_outputs = UNDEFINED
         
         self.transitions = []
 
@@ -278,6 +278,61 @@ class Operator:
                 transitions.append((values, dt_transition))
         self.transitions = transitions
 
+class StateOperator:
+    def __init__(self, inputs: list[State], op: dict[tuple, tuple], tp: Duration, tt: Duration, name='operator'):
+        assert tt <= tp
+        self.tp = tp
+        self.tt = tt
+        
+        self.input_count = len(inputs)
+        assert all(self.input_count == len(o) for o in op.keys())
+        self.inputs = inputs
+
+        self.op = op
+
+        self.output_count = len(next(iter(op.values())))
+        assert all(self.output_count == len(o) for o in op.values())
+        self.outputs = [State() for _ in range(self.output_count)]
+        self.previous_outputs = UNDEFINED
+        
+        self.transitions = []
+
+        system.register_element(self, name)
+        for o in self.outputs:
+            system.register_state(o, f'{name}.output')
+
+    def next_update(self):
+        inputs = tuple((i.logic_level() for i in self.inputs))
+        if (self.previous_outputs != UNDEFINED
+            or len(inputs) == 0
+            or any((i != UNDEFINED for i in inputs))):
+            try:
+                outputs = self.op[inputs]
+            except KeyError:
+                outputs = self.output_count * [STATE_UNKOWN]
+            if self.previous_outputs != outputs:
+                self.transitions.append((outputs, self.tp))
+                self.previous_outputs = tuple((o.logic_level() for o in outputs))
+        if len(self.transitions) > 0:
+            _, dt = self.transitions[0]
+            return dt
+        else:
+            return None
+    
+    def update(self, dt: Duration):
+        if len(self.transitions) == 0:
+            return
+        transitions = []
+        for values, dt_transition in self.transitions:
+            assert dt <= dt_transition
+            dt_transition -= dt
+            if dt_transition <= Duration(0):
+                for output, value in zip(self.outputs, values):
+                    output.set(value.value, value.is_driving)
+            else:
+                transitions.append((values, dt_transition))
+        self.transitions = transitions
+
 class Buffer(Operator):
     def __init__(self, input: State, tp: Duration, tt: Duration):
         super().__init__([input], {(LO,): (LO,),
@@ -306,6 +361,26 @@ class Or(Operator):
                                               (HI, HI): (HI,)}, tp, tt, 'or')
         self.output = self.outputs[0]
 
+class MuxerDemuxer:
+    def __init__(self, i_sel: list[State], inputs: list[State], o_sel: list[State], tp: Duration, tt: Duration):
+        mux_map = {}
+        coordinates = len(i_sel) * [[LO, HI]]
+        for index, input in enumerate(itertools.product(*coordinates)):
+            mux_map[input] = [inputs[index]]
+        # selection bits need to be reversed because of the way itertools.product produces items
+        self.muxer = StateOperator(list(reversed(i_sel)), mux_map, tp, tt, 'muxer_demuxer.muxer')
+
+        demux_map = {}
+        coordinates = len(o_sel) * [[LO, HI]]
+        for index, input in enumerate(itertools.product(*coordinates)):
+            output = 2 ** len(o_sel) * [STATE_LO]
+            output[index] = self.muxer.outputs[0]
+            demux_map[input] = output
+        # selection bits need to be reversed because of the way itertools.product produces items
+        self.demuxer = StateOperator(list(reversed(o_sel)), demux_map, tp, tt, 'muxer_demuxer.demuxer')
+
+        self.outputs = self.demuxer.outputs
+
 class DecoderBase(Operator):
     def __init__(self, inputs: list[State], tp: Duration, tt: Duration):
         self.input_count = len(inputs)
@@ -333,14 +408,16 @@ class Enabler:
         self.en = en
         self.previous_en = UNDEFINED
         
+        assert tt_en <= tp_en
         self.tp_en = tp_en
-        self.tp_dis = tp_dis
         self.tt_en = tt_en
+        
+        assert tt_dis <= tp_dis
+        self.tp_dis = tp_dis
         self.tt_dis = tt_dis
         
         self.output_enabled = None
         self.output = State()
-        self.output.set(UNDEFINED, True)
         
         self.disabled_state = disabled
         
