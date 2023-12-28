@@ -138,8 +138,24 @@ class System:
             self.update(current_dt)
         return current_dt
 
-class State:
-    def __init__(self) -> None:
+class BaseState:
+    def __init__(self, value, drive):
+        self.value = value
+        self.is_driving = drive
+
+    def __repr__(self):
+        return f'BaseState({repr(self.value)}, {repr(self.is_driving)})'
+    
+    def logic_level(self):
+        if self.value in [LO, TLM, TML]:
+            return LO
+        if self.value in [HI, THM, TMH]:
+            return HI
+        return self.value
+
+class State(BaseState):
+    def __init__(self):
+        super().__init__(UNDEFINED, False)
         self.timeline = []
         self.set(UNDEFINED, False)
         
@@ -152,13 +168,11 @@ class State:
         if len(self.timeline) > 0:
             assert self.timeline[-1][0] <= system.timestamp
         self.timeline.append((system.timestamp, self.value, self.is_driving))
-    
-    def logic_level(self):
-        if self.value in [LO, TLM, TML]:
-            return LO
-        if self.value in [HI, THM, TMH]:
-            return HI
-        return self.value
+
+STATE_LO = BaseState(LO, True)
+STATE_HI = BaseState(HI, True)
+STATE_Z = BaseState(Z, False)
+
 system = System()
 
 # clock
@@ -338,7 +352,7 @@ class Decoder:
         return
 
 class Enabler:
-    def __init__(self, input: State, en: State, tp_en: Duration, tp_dis: Duration, tt_en: Duration, tt_dis: Duration, disabled: State):
+    def __init__(self, input: State, en: State, tp_en: Duration, tp_dis: Duration, tt_en: Duration, tt_dis: Duration, disabled: BaseState):
         self.input = input
 
         self.en = en
@@ -407,7 +421,5 @@ class Enabler:
 class Buffer3S:
     def __init__(self, input: State, tp: Duration, tt: Duration, en: State, t_en: Duration, t_dis: Duration):
         self.buffer = Buffer(input, tp, tt)
-        self.disabled = State()
-        self.disabled.set(Z)
-        self.enabler = Enabler(self.buffer.output, en, t_en, t_dis, tt, tt, self.disabled)
+        self.enabler = Enabler(self.buffer.output, en, t_en, t_dis, tt, tt, STATE_Z)
         self.output = self.enabler.output

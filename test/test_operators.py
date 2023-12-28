@@ -121,9 +121,7 @@ class Test3State(unittest.TestCase):
         en = s.State()
         en.set(HI, True)
         
-        z = s.State()
-        z.set(Z)
-        b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), z)
+        b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), s.STATE_Z)
         self.assertEqual(UNDEFINED, b.output.value)
         self.assertEqual(s.s(0.1), b.next_update())
         b.update(s.s(0.1))
@@ -151,9 +149,7 @@ class Test3State(unittest.TestCase):
         en = s.State()
         en.set(HI, True)
         
-        z = s.State()
-        z.set(Z)
-        b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), z)
+        b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), s.STATE_Z)
         self.assertEqual(s.s(0.1), b.next_update()) # initialization
         b.update(s.s(0.1))
 
