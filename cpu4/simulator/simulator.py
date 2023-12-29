@@ -334,6 +334,29 @@ class Demuxer(Operator):
         # selection bits need to be reversed because of the way itertools.product produces items
         super().__init__(list(reversed(sel)), demux_map, tp, tt, 'demuxer')
 
+class Adder:
+    def __init__(self, inputs_a: list[State], inputs_b: list[State], cin: State, tp: Duration, tt: Duration):
+        bit_count = len(inputs_a)
+        max_value = 2 ** bit_count
+        assert bit_count == len(inputs_b)
+        
+        add_map = {}
+        coordinates = bit_count * [[LO, HI]]
+        input_values = list(itertools.product(*coordinates))
+        coordinates = bit_count * [[STATE_LO, STATE_HI]]
+        output_states = list(itertools.product(*coordinates))
+        for a_value, a_input in enumerate(input_values):
+            for b_value, b_input in enumerate(input_values):
+                for c_value, c_input in enumerate([(LO,), (HI,)]):
+                    select = c_input + b_input + a_input
+                    output = a_value + b_value + c_value
+                    cout = {False: STATE_LO, True: STATE_HI}[output >= max_value]
+                    output = output % max_value
+                    add_map[select] = (cout,) + output_states[output]
+        self.adder = Operator([cin] + list(reversed(inputs_b)) + list(reversed(inputs_a)), add_map, tp, tt, 'adder')
+        self.cout = self.adder.outputs[0]
+        self.outputs = self.adder.outputs[1:]
+
 class Decoder:
     def __init__(self, inputs: list[State], en: State, tp_data: Duration, tp_en: Duration, tt: Duration):
         self.decoder = Demuxer(STATE_HI, inputs, tp_data, tt)

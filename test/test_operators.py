@@ -459,3 +459,39 @@ class TestMux(unittest.TestCase):
         i2.set(HI)
         s.system.step()
         self.assertEqual(HI, m.output.value)
+
+class TestAdder(unittest.TestCase):
+    def assertStatesEqual(self, expected, actual):
+        self.assertEqual(expected, [s.value for s in actual])
+
+    def test_2_bits(self):
+        s.system.clear()
+
+        a0, a1, b0, b1, cin = [s.State(LO) for _ in range(5)]
+        a = s.Adder([a0, a1], [b0, b1], cin, s.s(1), s.s(0.1))
+
+        def step():
+            while s.system.step() is not None:
+                pass
+        
+        self.assertStatesEqual([UNDEFINED, UNDEFINED], a.outputs)
+        self.assertEqual(UNDEFINED, a.cout.value)
+        step()
+        self.assertStatesEqual([LO, LO], a.outputs)
+        self.assertEqual(LO, a.cout.value)
+        a0.set(HI)
+        step()
+        self.assertStatesEqual([LO, HI], a.outputs)
+        self.assertEqual(LO, a.cout.value)
+        b0.set(HI)
+        step()
+        self.assertStatesEqual([HI, LO], a.outputs)
+        self.assertEqual(LO, a.cout.value)
+        a1.set(HI)
+        step()
+        self.assertStatesEqual([LO, LO], a.outputs)
+        self.assertEqual(HI, a.cout.value)
+        cin.set(HI)
+        step()
+        self.assertStatesEqual([LO, HI], a.outputs)
+        self.assertEqual(HI, a.cout.value)
