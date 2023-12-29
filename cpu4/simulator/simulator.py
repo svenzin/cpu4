@@ -174,6 +174,7 @@ STATE_LO = BaseState(LO, True)
 STATE_HI = BaseState(HI, True)
 STATE_Z = BaseState(Z, False)
 STATE_UNKOWN = BaseState(UNKNOWN, True)
+STATE_CONFLICT = BaseState(CONFLICT, True)
 
 system = System()
 
@@ -311,6 +312,11 @@ class Or(Operator):
 
 class Muxer(Operator):
     def __init__(self, inputs: list[State], sel: list[State], tp: Duration, tt: Duration):
+        # mux_map example for 4>1 mux
+        # { (LO, LO): (inputs[0],),
+        #   (LO, HI): (inputs[1],),
+        #   (HI, LO): (inputs[2],),
+        #   (HI, HI): (inputs[3],) }
         mux_map = {}
         coordinates = len(sel) * [[LO, HI]]
         for index, select in enumerate(itertools.product(*coordinates)):
@@ -324,6 +330,11 @@ class Muxer(Operator):
 
 class Demuxer(Operator):
     def __init__(self, input: State, sel: list[State], tp: Duration, tt: Duration):
+        # demux_map example for 1>4 demux
+        # { (LO, LO): (input,    STATE_LO, STATE_LO, STATE_LO),
+        #   (LO, HI): (STATE_LO, input,    STATE_LO, STATE_LO),
+        #   (HI, LO): (STATE_LO, STATE_LO, input,    STATE_LO),
+        #   (HI, HI): (STATE_LO, STATE_LO, STATE_LO, input) }
         demux_map = {}
         coordinates = len(sel) * [[LO, HI]]
         for index, select in enumerate(itertools.product(*coordinates)):
@@ -336,24 +347,35 @@ class Demuxer(Operator):
 
 class Adder:
     def __init__(self, inputs_a: list[State], inputs_b: list[State], cin: State, tp: Duration, tt: Duration):
+        # add_map example for 1 bit adder
+        # { (LO, LO, LO): (STATE_LO, STATE_LO),
+        #   (LO, LO, HI): (STATE_LO, STATE_HI),
+        #   (LO, HI, LO): (STATE_LO, STATE_HI),
+        #   (LO, HI, HI): (STATE_HI, STATE_LO),
+        #   (HI, LO, LO): (STATE_LO, STATE_HI),
+        #   (HI, LO, HI): (STATE_HI, STATE_LO),
+        #   (HI, HI, LO): (STATE_HI, STATE_LO),
+        #   (HI, HI, HI): (STATE_HI, STATE_HI) }
         bit_count = len(inputs_a)
-        max_value = 2 ** bit_count
         assert bit_count == len(inputs_b)
         
-        add_map = {}
+        # input_values contain 'bit_count' bits
         coordinates = bit_count * [[LO, HI]]
         input_values = list(itertools.product(*coordinates))
-        coordinates = bit_count * [[STATE_LO, STATE_HI]]
+        
+        # output_values contain 'bit_count + 1' bits : (cout, *result)
+        coordinates = (bit_count + 1) * [[STATE_LO, STATE_HI]]
         output_states = list(itertools.product(*coordinates))
+        
+        add_map = {}
         for a_value, a_input in enumerate(input_values):
             for b_value, b_input in enumerate(input_values):
                 for c_value, c_input in enumerate([(LO,), (HI,)]):
                     select = c_input + b_input + a_input
                     output = a_value + b_value + c_value
-                    cout = {False: STATE_LO, True: STATE_HI}[output >= max_value]
-                    output = output % max_value
-                    add_map[select] = (cout,) + output_states[output]
+                    add_map[select] = output_states[output]
         self.adder = Operator([cin] + list(reversed(inputs_b)) + list(reversed(inputs_a)), add_map, tp, tt, 'adder')
+        
         self.cout = self.adder.outputs[0]
         self.outputs = self.adder.outputs[1:]
 
