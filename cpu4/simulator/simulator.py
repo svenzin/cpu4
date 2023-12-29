@@ -250,59 +250,6 @@ class Operator:
 
     def next_update(self):
         inputs = tuple((i.logic_level() for i in self.inputs))
-        if any((i != UNDEFINED for i in inputs)) or self.previous_outputs != UNDEFINED:
-            try:
-                outputs = self.op[inputs]
-            except KeyError:
-                outputs = self.output_count * [UNKNOWN]
-            if self.previous_outputs != outputs:
-                self.transitions.append((outputs, self.tp))
-                self.previous_outputs = outputs
-        if len(self.transitions) > 0:
-            _, dt = self.transitions[0]
-            return dt
-        else:
-            return None
-    
-    def update(self, dt: Duration):
-        if len(self.transitions) == 0:
-            return
-        transitions = []
-        for values, dt_transition in self.transitions:
-            assert dt <= dt_transition
-            dt_transition -= dt
-            if dt_transition <= Duration(0):
-                for output, value in zip(self.outputs, values):
-                    output.set(value, True)
-            else:
-                transitions.append((values, dt_transition))
-        self.transitions = transitions
-
-class StateOperator:
-    def __init__(self, inputs: list[State], op: dict[tuple, tuple], tp: Duration, tt: Duration, name='operator'):
-        assert tt <= tp
-        self.tp = tp
-        self.tt = tt
-        
-        self.input_count = len(inputs)
-        assert all(self.input_count == len(o) for o in op.keys())
-        self.inputs = inputs
-
-        self.op = op
-
-        self.output_count = len(next(iter(op.values())))
-        assert all(self.output_count == len(o) for o in op.values())
-        self.outputs = [State() for _ in range(self.output_count)]
-        self.previous_outputs = UNDEFINED
-        
-        self.transitions = []
-
-        system.register_element(self, name)
-        for o in self.outputs:
-            system.register_state(o, f'{name}.output')
-
-    def next_update(self):
-        inputs = tuple((i.logic_level() for i in self.inputs))
         if (self.previous_outputs != UNDEFINED
             or len(inputs) == 0
             or any((i != UNDEFINED for i in inputs))):
@@ -310,9 +257,10 @@ class StateOperator:
                 outputs = self.op[inputs]
             except KeyError:
                 outputs = self.output_count * [STATE_UNKOWN]
-            if self.previous_outputs != outputs:
+            current_outputs = tuple((o.logic_level() for o in outputs))
+            if self.previous_outputs != current_outputs:
                 self.transitions.append((outputs, self.tp))
-                self.previous_outputs = tuple((o.logic_level() for o in outputs))
+                self.previous_outputs = current_outputs
         if len(self.transitions) > 0:
             _, dt = self.transitions[0]
             return dt
@@ -335,69 +283,60 @@ class StateOperator:
 
 class Buffer(Operator):
     def __init__(self, input: State, tp: Duration, tt: Duration):
-        super().__init__([input], {(LO,): (LO,),
-                                   (HI,): (HI,)}, tp, tt, 'buffer')
+        super().__init__([input], {(LO,): (STATE_LO,),
+                                   (HI,): (STATE_HI,)}, tp, tt, 'buffer')
         self.output = self.outputs[0]
 
 class Inverter(Operator):
     def __init__(self, input: State, tp: Duration, tt: Duration):
-        super().__init__([input], {(LO,): (HI,),
-                                   (HI,): (LO,)}, tp, tt, 'inverter')
+        super().__init__([input], {(LO,): (STATE_HI,),
+                                   (HI,): (STATE_LO,)}, tp, tt, 'inverter')
         self.output = self.outputs[0]
 
 class And(Operator):
     def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
-        super().__init__([input_a, input_b], {(LO, LO): (LO,),
-                                              (LO, HI): (LO,),
-                                              (HI, LO): (LO,),
-                                              (HI, HI): (HI,)}, tp, tt, 'and')
+        super().__init__([input_a, input_b], {(LO, LO): (STATE_LO,),
+                                              (LO, HI): (STATE_LO,),
+                                              (HI, LO): (STATE_LO,),
+                                              (HI, HI): (STATE_HI,)}, tp, tt, 'and')
         self.output = self.outputs[0]
 
 class Or(Operator):
     def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
-        super().__init__([input_a, input_b], {(LO, LO): (LO,),
-                                              (LO, HI): (HI,),
-                                              (HI, LO): (HI,),
-                                              (HI, HI): (HI,)}, tp, tt, 'or')
+        super().__init__([input_a, input_b], {(LO, LO): (STATE_LO,),
+                                              (LO, HI): (STATE_HI,),
+                                              (HI, LO): (STATE_HI,),
+                                              (HI, HI): (STATE_HI,)}, tp, tt, 'or')
         self.output = self.outputs[0]
 
-class MuxerDemuxer:
-    def __init__(self, i_sel: list[State], inputs: list[State], o_sel: list[State], tp: Duration, tt: Duration):
+class Muxer(Operator):
+    def __init__(self, inputs: list[State], sel: list[State], tp: Duration, tt: Duration):
         mux_map = {}
-        coordinates = len(i_sel) * [[LO, HI]]
-        for index, input in enumerate(itertools.product(*coordinates)):
-            mux_map[input] = [inputs[index]]
-        # selection bits need to be reversed because of the way itertools.product produces items
-        self.muxer = StateOperator(list(reversed(i_sel)), mux_map, tp, tt, 'muxer_demuxer.muxer')
-
-        demux_map = {}
-        coordinates = len(o_sel) * [[LO, HI]]
-        for index, input in enumerate(itertools.product(*coordinates)):
-            output = 2 ** len(o_sel) * [STATE_LO]
-            output[index] = self.muxer.outputs[0]
-            demux_map[input] = output
-        # selection bits need to be reversed because of the way itertools.product produces items
-        self.demuxer = StateOperator(list(reversed(o_sel)), demux_map, tp, tt, 'muxer_demuxer.demuxer')
-
-        self.outputs = self.demuxer.outputs
-
-class DecoderBase(Operator):
-    def __init__(self, inputs: list[State], tp: Duration, tt: Duration):
-        self.input_count = len(inputs)
-        self.output_count = 2 ** self.input_count
+        coordinates = len(sel) * [[LO, HI]]
+        for index, select in enumerate(itertools.product(*coordinates)):
+            mux_map[select] = [inputs[index]]
         
-        decoder_map = {}
-        coordinates = self.input_count * [[LO, HI]]
-        for index, input in enumerate(itertools.product(*coordinates)):
-            output = self.output_count * [LO]
-            output[index] = HI
-            decoder_map[input] = output
+        # selection bits need to be reversed because of the way itertools.product produces items
+        super().__init__(list(reversed(sel)), mux_map, tp, tt, 'muxer')
 
-        super().__init__(inputs, decoder_map, tp, tt, 'decoder')
+        assert len(self.outputs) == 1
+        self.output = self.outputs[0]
 
-class Decoder(DecoderBase):
+class Demuxer(Operator):
+    def __init__(self, input: State, sel: list[State], tp: Duration, tt: Duration):
+        demux_map = {}
+        coordinates = len(sel) * [[LO, HI]]
+        for index, select in enumerate(itertools.product(*coordinates)):
+            output = 2 ** len(sel) * [STATE_LO]
+            output[index] = input
+            demux_map[select] = output
+        
+        # selection bits need to be reversed because of the way itertools.product produces items
+        super().__init__(list(reversed(sel)), demux_map, tp, tt, 'demuxer')
+
+class Decoder:
     def __init__(self, inputs: list[State], en: State, tp_data: Duration, tp_en: Duration, tt: Duration):
-        self.decoder = DecoderBase(inputs, tp_data, tt)
+        self.decoder = Demuxer(STATE_HI, inputs, tp_data, tt)
         self.enablers = [Enabler(o, en, tp_en, tp_en, tt, tt, STATE_LO) for o in self.decoder.outputs]
         self.outputs = [e.output for e in self.enablers]
 

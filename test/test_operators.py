@@ -400,30 +400,35 @@ class TestMux(unittest.TestCase):
         is0, is1 = s.State(LO), s.State(LO)
         os0 = s.State(LO)
         i0, i1, i2, i3 = [s.State(LO) for _ in range(4)]
-        md = s.MuxerDemuxer([is0, is1], [i0, i1, i2, i3], [os0], s.s(1), s.s(0.1))
+        m = s.Muxer([i0, i1, i2, i3], [is0, is1], s.s(1), s.s(0.1))
+        d = s.Demuxer(m.output, [os0], s.s(1), s.s(0.1))
 
-        self.assertStatesEqual([UNDEFINED, UNDEFINED], md.outputs)
-        s.system.step()
-        self.assertStatesEqual([LO, LO], md.outputs)
+        def step():
+            while s.system.step() is not None:
+                pass
+        
+        self.assertStatesEqual([UNDEFINED, UNDEFINED], d.outputs)
+        step()
+        self.assertStatesEqual([LO, LO], d.outputs)
         i0.set(HI)
-        s.system.step()
-        self.assertStatesEqual([HI, LO], md.outputs)
+        step()
+        self.assertStatesEqual([HI, LO], d.outputs)
         os0.set(HI)
-        s.system.step()
-        self.assertStatesEqual([LO, HI], md.outputs)
+        step()
+        self.assertStatesEqual([LO, HI], d.outputs)
         is1.set(HI)
-        s.system.step()
-        self.assertStatesEqual([LO, LO], md.outputs)
+        step()
+        self.assertStatesEqual([LO, LO], d.outputs)
         i2.set(HI)
-        s.system.step()
-        self.assertStatesEqual([LO, HI], md.outputs)
+        step()
+        self.assertStatesEqual([LO, HI], d.outputs)
 
     def test_1_to_2(self):
         s.system.clear()
 
         os0 = s.State(LO)
         i0 = s.State(LO)
-        md = s.MuxerDemuxer([], [i0], [os0], s.s(1), s.s(0.1))
+        md = s.Demuxer(i0, [os0], s.s(1), s.s(0.1))
 
         self.assertStatesEqual([UNDEFINED, UNDEFINED], md.outputs)
         s.system.step()
@@ -440,17 +445,17 @@ class TestMux(unittest.TestCase):
 
         is0, is1 = s.State(LO), s.State(LO)
         i0, i1, i2, i3 = [s.State(LO) for _ in range(4)]
-        md = s.MuxerDemuxer([is0, is1], [i0, i1, i2, i3], [], s.s(1), s.s(0.1))
+        m = s.Muxer([i0, i1, i2, i3], [is0, is1], s.s(1), s.s(0.1))
 
-        self.assertStatesEqual([UNDEFINED], md.outputs)
+        self.assertEqual(UNDEFINED, m.output.value)
         s.system.step()
-        self.assertStatesEqual([LO], md.outputs)
+        self.assertEqual(LO, m.output.value)
         i0.set(HI)
         s.system.step()
-        self.assertStatesEqual([HI], md.outputs)
+        self.assertEqual(HI, m.output.value)
         is1.set(HI)
         s.system.step()
-        self.assertStatesEqual([LO], md.outputs)
+        self.assertEqual(LO, m.output.value)
         i2.set(HI)
         s.system.step()
-        self.assertStatesEqual([HI], md.outputs)
+        self.assertEqual(HI, m.output.value)
