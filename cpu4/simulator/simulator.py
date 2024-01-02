@@ -385,6 +385,12 @@ class Decoder:
         self.enablers = [Enabler(o, en, tp_en, tp_en, tt, tt, STATE_LO) for o in self.decoder.outputs]
         self.outputs = [e.output for e in self.enablers]
 
+class EnablerOperator(Operator):
+    def __init__(self, input: State, en: State, tp: Duration, tt: Duration, disabled: BaseState):
+        super().__init__([en], {(LO,): (disabled,),
+                                (HI,): (input,)}, tp, tt, 'enabler')
+        self.output = self.outputs[0]
+
 class Enabler:
     def __init__(self, input: State, en: State, tp_en: Duration, tp_dis: Duration, tt_en: Duration, tt_dis: Duration, disabled: BaseState):
         self.input = input
