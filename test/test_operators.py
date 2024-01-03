@@ -3,8 +3,15 @@ import unittest
 from cpu4.simulator import simulator as s
 from cpu4.simulator.simulator import LO, HI, TLM, TMH, THM, TML, UNDEFINED, Z, UNKNOWN, CONFLICT
 
+class OperatorTestCase(unittest.TestCase):
+    def assertStatesEqual(self, expected, actual):
+        self.assertEqual(expected, [s.value for s in actual])
 
-class TestClock(unittest.TestCase):
+    def assertTimestamp(self, d):
+        self.assertEqual(d.d, s.system.timestamp.t)
+
+
+class TestClock(OperatorTestCase):
     def test_init_phase_0(self):
         s.system.clear()
         c = s.Clock(s.hz(1), tt=s.ms(200), phase=0)
@@ -31,10 +38,10 @@ class TestClock(unittest.TestCase):
         # phase 270° -> HI>LO @ 0.15s, LO>HI @ 0.75s, HI>LO @ 1.15s
         def step(t, cv):
             s.system.step()
-            self.assertEqual(s.s(t).d, s.system.timestamp.t)
+            self.assertTimestamp(s.s(t))
             self.assertEqual(cv, c.clock.value)
 
-        self.assertEqual(s.s(0).d, s.system.timestamp.t)
+        self.assertTimestamp(s.s(0))
         self.assertEqual(HI, c.clock.value)
 
         step(0.15, LO)
@@ -247,13 +254,7 @@ class TestAnd(unittest.TestCase):
         s.system.step()
         self.assertEqual(UNKNOWN, b.output.value)
 
-class TestDecoder(unittest.TestCase):
-    def assertStatesEqual(self, expected, actual):
-        self.assertEqual(expected, [s.value for s in actual])
-
-    def assertTimestamp(self, d):
-        self.assertEqual(d.d, s.system.timestamp.t)
-
+class TestDecoder(OperatorTestCase):
     def test_1_to_2(self):
         s.system.clear()
 
@@ -301,7 +302,7 @@ class TestDecoder(unittest.TestCase):
         self.assertTimestamp(s.s(4.5))
         self.assertStatesEqual([UNKNOWN, UNKNOWN], d.outputs)
 
-class TestCombinations(unittest.TestCase):
+class TestCombinations(OperatorTestCase):
     def test_buffered_clock(self):
         s.system.clear()
 
@@ -310,7 +311,7 @@ class TestCombinations(unittest.TestCase):
 
         def step(t, cv, bv):
             s.system.step()
-            self.assertEqual(s.s(t).d, s.system.timestamp.t)
+            self.assertTimestamp(s.s(t))
             self.assertEqual(cv, c.clock.value)
             self.assertEqual(bv, b.output.value)
 
@@ -333,7 +334,7 @@ class TestCombinations(unittest.TestCase):
             s.system.step()
             while s.system.next_update() == s.Duration(0):
                 s.system.step()
-            self.assertEqual(s.s(t).d, s.system.timestamp.t)
+            self.assertTimestamp(s.s(t))
             self.assertEqual(cv, c.clock.value)
             self.assertEqual(bv, b.output.value)
 
@@ -356,7 +357,7 @@ class TestCombinations(unittest.TestCase):
 
         def step(t, cv, bv):
             s.system.step()
-            self.assertEqual(s.s(t).d, s.system.timestamp.t)
+            self.assertTimestamp(s.s(t))
             self.assertEqual(cv, c.clock.value)
             self.assertEqual(bv, b.output.value)
 
@@ -374,7 +375,7 @@ class TestCombinations(unittest.TestCase):
         
         def step(t, cv, nv, av):
             s.system.step()
-            self.assertEqual(s.s(t).d, s.system.timestamp.t)
+            self.assertTimestamp(s.s(t))
             self.assertEqual(cv, c.clock.value)
             self.assertEqual(nv, bc.output.value)
             self.assertEqual(av, a.output.value)
@@ -397,10 +398,7 @@ class TestCombinations(unittest.TestCase):
         step(3.00, LO, HI, HI)
         step(3.10, LO, HI, LO)
 
-class TestMux(unittest.TestCase):
-    def assertStatesEqual(self, expected, actual):
-        self.assertEqual(expected, [s.value for s in actual])
-
+class TestMux(OperatorTestCase):
     def test_4_to_2(self):
         s.system.clear()
 
@@ -467,10 +465,7 @@ class TestMux(unittest.TestCase):
         s.system.step()
         self.assertEqual(HI, m.output.value)
 
-class TestAdder(unittest.TestCase):
-    def assertStatesEqual(self, expected, actual):
-        self.assertEqual(expected, [s.value for s in actual])
-
+class TestAdder(OperatorTestCase):
     def test_2_bits(self):
         s.system.clear()
 
@@ -502,3 +497,222 @@ class TestAdder(unittest.TestCase):
         step()
         self.assertStatesEqual([LO, HI], a.outputs)
         self.assertEqual(HI, a.cout.value)
+
+class TestDtypeFlipFlop(OperatorTestCase):
+    def init(self):
+        self.Tp = s.ms(20)
+        self.Tt = s.ms(5)
+        self.Tw = s.ms(7)
+        self.Tr = s.ms(2)
+        self.Ts = s.ms(13)
+        self.Th = s.ms(6)
+        self.Tshort = s.ms(1)
+        clock = s.State(LO, True)
+        input = s.State(LO, True)
+        reset = s.State(LO, True)
+        enable = s.State(LO, True)
+        ff = s.DtypeFlipFlop([input], clock, reset, enable, tp=self.Tp, tt=self.Tt, tw=self.Tw, tr=self.Tr, ts=self.Ts, th=self.Th)
+        return clock, input, reset, enable, ff
+
+    def test_load(self):
+        clock, input, reset, enable, ff = self.init()
+        self.assertStatesEqual([UNDEFINED], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+        # triggered on LO>HI transition
+        enable.set(HI, True)
+        ff.next_update()
+        ff.update(max(self.Ts, self.Tw))
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([LO], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+        
+        # no output change outside of LO>HI trigger
+        input.set(HI, True)
+        self.assertEqual(None, ff.next_update())
+
+        # HI>LO does not trigger the flip flop
+        clock.set(LO, True)
+        self.assertEqual(None, ff.next_update())
+
+        # trigger the flip flop with HI input after enough time spent in LO
+        ff.update(max(self.Ts, self.Tw))
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([HI], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_load_inhibited(self):
+        clock, input, reset, enable, ff = self.init()
+        clock.set(HI, True)
+        self.assertEqual(None, ff.next_update())
+
+    def test_load_lo_pulse_too_short(self):
+        clock, input, reset, enable, ff = self.init()
+        enable.set(HI, True)
+        ff.next_update()
+        ff.update(self.Tshort)
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([UNKNOWN], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_load_hi_pulse_too_short(self):
+        clock, input, reset, enable, ff = self.init()
+        enable.set(HI, True)
+        ff.next_update()
+        ff.update(max(self.Tw, self.Th))
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tshort)
+        clock.set(LO, True)
+        self.assertEqual(self.Tp - self.Tshort, ff.next_update())
+        ff.update(self.Tp - self.Tshort)
+        self.assertStatesEqual([UNKNOWN], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_load_enable_setup_too_short(self):
+        clock, input, reset, enable, ff = self.init()
+        ff.next_update()
+        ff.update(self.Tw)
+        enable.set(HI, True)
+        ff.next_update()
+        ff.update(self.Tshort)
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([UNKNOWN], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_load_data_setup_too_short(self):
+        clock, input, reset, enable, ff = self.init()
+        enable.set(HI, True)
+        ff.next_update()
+        ff.update(max(self.Tw, self.Ts))
+        input.set(HI, True)
+        ff.next_update()
+        ff.update(self.Tshort)
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([UNKNOWN], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_load_enable_hold_too_short(self):
+        clock, input, reset, enable, ff = self.init()
+        enable.set(HI, True)
+        ff.next_update()
+        ff.update(max(self.Tw, self.Ts))
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tshort)
+        enable.set(LO, True)
+        self.assertEqual(self.Tp - self.Tshort, ff.next_update())
+        ff.update(self.Tp - self.Tshort)
+        self.assertStatesEqual([UNKNOWN], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_load_data_hold_too_short(self):
+        clock, input, reset, enable, ff = self.init()
+        enable.set(HI, True)
+        ff.next_update()
+        ff.update(max(self.Tw, self.Ts))
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tshort)
+        input.set(HI, True)
+        self.assertEqual(self.Tp - self.Tshort, ff.next_update())
+        ff.update(self.Tp - self.Tshort)
+        self.assertStatesEqual([UNKNOWN], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_reset(self):
+        clock, input, reset, enable, ff = self.init()
+        enable.set(HI, True)
+        input.set(HI, True)
+        ff.next_update()
+        ff.update(max(self.Tw, self.Ts))
+        clock.set(HI, True)
+        ff.next_update()
+        ff.update(self.Tp)
+        self.assertStatesEqual([HI], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+        # reset contents
+        reset.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([LO], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+        # clock is inhibited
+        clock.set(LO, True)
+        ff.next_update()
+        ff.update(self.Tw)
+        clock.set(HI, True)
+        self.assertEqual(None, ff.next_update())
+        ff.update(self.Tw)
+        # once reset is release, clock data in
+        reset.set(LO, True)
+        ff.next_update()
+        ff.update(self.Tr)
+        clock.set(LO, True)
+        ff.next_update()
+        ff.update(self.Tw)
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([HI], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_reset_pulse_too_short(self):
+        clock, input, reset, enable, ff = self.init()
+        enable.set(HI, True)
+        input.set(HI, True)
+        ff.next_update()
+        ff.update(max(self.Tw, self.Ts))
+        clock.set(HI, True)
+        ff.next_update()
+        ff.update(self.Tp)
+        self.assertStatesEqual([HI], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+        # reset pulse too short
+        reset.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tshort)
+        reset.set(LO, True)
+        self.assertEqual(self.Tp - self.Tshort, ff.next_update())
+        ff.update(self.Tp - self.Tshort)
+        self.assertStatesEqual([UNKNOWN], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+
+    def test_reset_recovery_too_short(self):
+        clock, input, reset, enable, ff = self.init()
+        enable.set(HI, True)
+        input.set(HI, True)
+        ff.next_update()
+        ff.update(max(self.Tw, self.Ts))
+        clock.set(HI, True)
+        ff.next_update()
+        ff.update(self.Tp)
+        self.assertStatesEqual([HI], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+        # reset
+        reset.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([LO], ff.outputs)
+        self.assertEqual(None, ff.next_update())
+        # cannot clock data in if before recovery time
+        clock.set(LO, True)
+        self.assertEqual(None, ff.next_update())
+        ff.update(self.Tw)
+        reset.set(LO, True)
+        self.assertEqual(None, ff.next_update())
+        ff.update(self.Tshort)
+        clock.set(HI, True)
+        self.assertEqual(self.Tp, ff.next_update())
+        ff.update(self.Tp)
+        self.assertStatesEqual([UNKNOWN], ff.outputs)

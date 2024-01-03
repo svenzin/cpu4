@@ -154,6 +154,9 @@ class BaseState:
             return HI
         return self.value
 
+def logic_levels(states: list[BaseState]):
+    return tuple((s.logic_level() for s in states))
+
 class State(BaseState):
     def __init__(self, value=UNDEFINED, drive=False):
         self.timeline = []
@@ -250,7 +253,7 @@ class Operator:
             system.register_state(o, f'{name}.output')
 
     def next_update(self):
-        inputs = tuple((i.logic_level() for i in self.inputs))
+        inputs = logic_levels(self.inputs)
         if (self.previous_outputs != UNDEFINED
             or len(inputs) == 0
             or any((i != UNDEFINED for i in inputs))):
@@ -258,7 +261,7 @@ class Operator:
                 outputs = self.op[inputs]
             except KeyError:
                 outputs = self.output_count * [STATE_UNKOWN]
-            current_outputs = tuple((o.logic_level() for o in outputs))
+            current_outputs = logic_levels(outputs)
             if self.previous_outputs != current_outputs:
                 self.transitions.append((outputs, self.tp))
                 self.previous_outputs = current_outputs
@@ -465,3 +468,124 @@ class Buffer3S:
         self.buffer = Buffer(input, tp, tt)
         self.enabler = Enabler(self.buffer.output, en, t_en, t_dis, tt, tt, STATE_Z)
         self.output = self.enabler.output
+
+class Base:
+    def __init__(self):
+        self.transitions = []
+    
+    def transition(self, payload):
+        raise NotImplementedError()
+
+    def append_transition(self, dt, *payload):
+        self.transitions.append([dt, Duration(0), *payload])
+
+    def next_update(self):
+        if len(self.transitions) > 0:
+            return self.transitions[0][0]
+        return None
+    
+    def update(self, dt):
+        for transition in self.transitions:
+            assert Duration(0) <= dt <= transition[0]
+            transition[0] -= dt
+            transition[1] += dt
+        
+        if len(self.transitions) > 0 and self.transitions[0][0] <= Duration(0):
+            _, _, *payload = self.transitions.pop(0)
+            self.transition(*payload)
+
+class DtypeFlipFlop(Base):
+    def __init__(self, inputs, clock, reset, enable, tp, tt, tw, tr, ts, th):
+        super().__init__()
+        assert tt <= tp
+        assert tw <= tp
+        assert th <= tp
+        assert tr <= tp
+        self.inputs = inputs
+        self.inputs_dt = Duration(0)
+        self.previous_inputs_values = logic_levels(inputs)
+        self.clock = clock
+        self.clock_dt = Duration(0)
+        self.previous_clock_value = clock.logic_level()
+        self.reset = reset
+        self.reset_dt = Duration(0)
+        self.previous_reset_value = reset.logic_level()
+        self.enable = enable
+        self.enable_dt = Duration(0)
+        self.previous_enable_value = enable.logic_level()
+        self.tp = tp
+        self.tt = tt
+        self.tw = tw
+        self.tr = tr
+        self.ts = ts
+        self.th = th
+
+        self.outputs = [State() for _ in inputs]
+
+    def next_update(self):
+        inputs = logic_levels(self.inputs)
+        if inputs != self.previous_inputs_values:
+            for transition in self.transitions:
+                if transition[4] is not None and transition[1] < self.th:
+                    transition[4] = True
+        clock = self.clock.logic_level()
+        if clock != self.previous_clock_value:
+            if self.clock_dt < self.tr:
+                for transition in self.transitions:
+                    transition[5] = True
+        reset = self.reset.logic_level()
+        if reset != self.previous_reset_value:
+            if self.previous_reset_value == HI and self.reset_dt < self.tr:
+                for transition in self.transitions:
+                    if transition[3] is not None:
+                        transition[3] = True
+        enable = self.enable.logic_level()
+        if enable != self.previous_enable_value:
+            if self.previous_enable_value == HI:
+                for transition in self.transitions:
+                    if transition[4] is not None and transition[1] < self.th:
+                        transition[4] = True
+        if clock != self.previous_clock_value:
+            if self.clock_dt < self.tw:
+                self.previous_clock_value = UNKNOWN
+            if reset == LO and enable == HI and clock == HI:
+                if self.previous_clock_value == LO and self.inputs_dt >= self.ts and self.enable_dt >= self.ts and self.reset_dt >= self.tr:
+                    inputs = logic_levels(self.inputs)
+                else:
+                    inputs = [UNKNOWN for _ in self.inputs]
+                self.append_transition(self.tp, inputs, None, False, False)
+            self.clock_dt = Duration(0)
+            self.previous_clock_value = clock
+        if inputs != self.previous_inputs_values:
+            self.previous_inputs_values = inputs
+            self.inputs_dt = Duration(0)
+        if reset != self.previous_reset_value:
+            if reset == LO:
+                pass
+            elif reset == HI:
+                inputs = [LO for _ in self.inputs]
+                self.append_transition(self.tp, inputs, False, None, False)
+            else:
+                inputs = [UNKNOWN for _ in self.inputs]
+                self.append_transition(self.tp, inputs, False, None, False)
+            self.previous_reset_value = reset
+            self.reset_dt = Duration(0)
+        if enable != self.previous_enable_value:
+            self.previous_enable_value = enable
+            self.enable_dt = Duration(0)
+        return super().next_update()
+    
+    def update(self, dt):
+        self.inputs_dt += dt
+        self.clock_dt += dt
+        self.reset_dt += dt
+        self.enable_dt += dt
+        return super().update(dt)
+
+    def transition(self, output_levels, reset_too_short, enable_too_short, clock_too_short):
+        assert len(output_levels) == len(self.outputs)
+        for o, l in zip(self.outputs, output_levels):
+            if reset_too_short or enable_too_short or clock_too_short:
+                o.set(UNKNOWN, True)
+            else:
+                o.set(l, True)
