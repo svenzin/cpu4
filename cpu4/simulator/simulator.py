@@ -469,30 +469,36 @@ class Buffer3S:
         self.enabler = Enabler(self.buffer.output, en, t_en, t_dis, tt, tt, STATE_Z)
         self.output = self.enabler.output
 
+class Transition:
+    def __init__(self, dt: Duration, *payload):
+        self.remaining_dt = dt
+        self.elapsed_dt = Duration(0)
+        self.payload = list(payload)
+
 class Base:
     def __init__(self):
-        self.transitions = []
+        self.transitions: list[Transition] = []
     
     def transition(self, payload):
         raise NotImplementedError()
 
     def append_transition(self, dt, *payload):
-        self.transitions.append([dt, Duration(0), *payload])
+        self.transitions.append(Transition(dt, *payload))
 
     def next_update(self):
         if len(self.transitions) > 0:
-            return self.transitions[0][0]
+            return self.transitions[0].remaining_dt
         return None
     
     def update(self, dt):
         for transition in self.transitions:
-            assert Duration(0) <= dt <= transition[0]
-            transition[0] -= dt
-            transition[1] += dt
+            assert Duration(0) <= dt <= transition.remaining_dt
+            transition.remaining_dt -= dt
+            transition.elapsed_dt += dt
         
-        if len(self.transitions) > 0 and self.transitions[0][0] <= Duration(0):
-            _, _, *payload = self.transitions.pop(0)
-            self.transition(*payload)
+        if len(self.transitions) > 0 and self.transitions[0].remaining_dt <= Duration(0):
+            transition = self.transitions.pop(0)
+            self.transition(*transition.payload)
 
 class DtypeFlipFlop(Base):
     def __init__(self, inputs, clock, reset, enable, tp, tt, tw, tr, ts, th):
@@ -526,25 +532,25 @@ class DtypeFlipFlop(Base):
         inputs = logic_levels(self.inputs)
         if inputs != self.previous_inputs_values:
             for transition in self.transitions:
-                if transition[4] is not None and transition[1] < self.th:
-                    transition[4] = True
+                if transition.payload[2] is not None and transition.elapsed_dt < self.th:
+                    transition.payload[2] = True
         clock = self.clock.logic_level()
         if clock != self.previous_clock_value:
             if self.clock_dt < self.tr:
                 for transition in self.transitions:
-                    transition[5] = True
+                    transition.payload[3] = True
         reset = self.reset.logic_level()
         if reset != self.previous_reset_value:
             if self.previous_reset_value == HI and self.reset_dt < self.tr:
                 for transition in self.transitions:
-                    if transition[3] is not None:
-                        transition[3] = True
+                    if transition.payload[1] is not None:
+                        transition.payload[1] = True
         enable = self.enable.logic_level()
         if enable != self.previous_enable_value:
             if self.previous_enable_value == HI:
                 for transition in self.transitions:
-                    if transition[4] is not None and transition[1] < self.th:
-                        transition[4] = True
+                    if transition.payload[2] is not None and transition.elapsed_dt < self.th:
+                        transition.payload[2] = True
         if clock != self.previous_clock_value:
             if self.clock_dt < self.tw:
                 self.previous_clock_value = UNKNOWN
@@ -588,4 +594,140 @@ class DtypeFlipFlop(Base):
             if reset_too_short or enable_too_short or clock_too_short:
                 o.set(UNKNOWN, True)
             else:
+                o.set(l, True)
+
+class BinaryCounter(Base):
+    def __init__(self, inputs, clock, reset, ce, le, tp, tt, tw, tr, ts, th):
+        super().__init__()
+        assert tt <= tp
+        assert tw <= tp
+        assert th <= tp
+        assert tr <= tp
+        self.inputs = inputs
+        self.inputs_dt = Duration(0)
+        self.previous_inputs_values = logic_levels(inputs)
+        self.clock = clock
+        self.clock_dt = Duration(0)
+        self.previous_clock_value = clock.logic_level()
+        self.reset = reset
+        self.reset_dt = Duration(0)
+        self.previous_reset_value = reset.logic_level()
+        self.ce = ce
+        self.ce_dt = Duration(0)
+        self.previous_ce_value = ce.logic_level()
+        self.le = le
+        self.le_dt = Duration(0)
+        self.previous_le_value = le.logic_level()
+        self.tp = tp
+        self.tt = tt
+        self.tw = tw
+        self.tr = tr
+        self.ts = ts
+        self.th = th
+
+        self.outputs = [State() for _ in inputs]
+        self.terminal_count = State()
+
+    def next_update(self):
+        inputs = logic_levels(self.inputs)
+        if inputs != self.previous_inputs_values:
+            for transition in self.transitions:
+                if transition.payload[2] is not None and transition.elapsed_dt < self.th:
+                    transition.payload[2] = True
+        clock = self.clock.logic_level()
+        if clock != self.previous_clock_value:
+            if self.clock_dt < self.tr:
+                for transition in self.transitions:
+                    assert transition.payload[3] is not None
+                    transition.payload[3] = True
+        reset = self.reset.logic_level()
+        if reset != self.previous_reset_value:
+            if self.previous_reset_value == HI and self.reset_dt < self.tr:
+                for transition in self.transitions:
+                    if transition.payload[1] is not None:
+                        transition.payload[1] = True
+        le = self.le.logic_level()
+        if le != self.previous_le_value:
+            if self.previous_le_value == HI:
+                for transition in self.transitions:
+                    if transition.payload[2] is not None and transition.elapsed_dt < self.th:
+                        transition.payload[2] = True
+        ce = self.ce.logic_level()
+        if ce != self.previous_ce_value:
+            if self.previous_ce_value == HI:
+                for transition in self.transitions:
+                    if transition.payload[4] is not None and transition.elapsed_dt < self.th:
+                        transition.payload[4] = True
+        if clock != self.previous_clock_value:
+            if self.clock_dt < self.tw:
+                self.previous_clock_value = UNKNOWN
+            if reset == LO and le == HI and clock == HI:
+                if self.previous_clock_value == LO and self.inputs_dt >= self.ts and self.le_dt >= self.ts and self.reset_dt >= self.tr:
+                    inputs = logic_levels(self.inputs)
+                else:
+                    inputs = [UNKNOWN for _ in self.inputs]
+                self.append_transition(self.tp, inputs, None, False, False, None)
+            elif reset == LO and ce == HI and clock == HI:
+                if self.previous_clock_value == LO and self.ce_dt >= self.ts:
+                    carry = HI
+                    outputs = []
+                    for bit in self.outputs:
+                        if bit.value == LO:
+                            outputs.append(carry)
+                            carry = LO
+                        elif bit.value == HI and carry == LO:
+                            outputs.append(HI)
+                        elif bit.value == HI and carry == HI:
+                            outputs.append(LO)
+                        else:
+                            outputs.append(UNKNOWN)
+                else:
+                    outputs = [UNKNOWN for _ in self.outputs]
+                self.append_transition(self.tp, outputs, None, None, False, False)
+            self.clock_dt = Duration(0)
+            self.previous_clock_value = clock
+        if inputs != self.previous_inputs_values:
+            self.previous_inputs_values = inputs
+            self.inputs_dt = Duration(0)
+        if reset != self.previous_reset_value:
+            if reset == LO:
+                pass
+            elif reset == HI:
+                inputs = [LO for _ in self.inputs]
+                self.append_transition(self.tp, inputs, False, None, False, None)
+            else:
+                inputs = [UNKNOWN for _ in self.inputs]
+                self.append_transition(self.tp, inputs, False, None, False, None)
+            self.previous_reset_value = reset
+            self.reset_dt = Duration(0)
+        if le != self.previous_le_value:
+            self.previous_le_value = le
+            self.le_dt = Duration(0)
+        if ce != self.previous_ce_value:
+            self.previous_ce_value = ce
+            self.ce_dt = Duration(0)
+        return super().next_update()
+    
+    def update(self, dt):
+        self.inputs_dt += dt
+        self.clock_dt += dt
+        self.reset_dt += dt
+        self.ce_dt += dt
+        self.le_dt += dt
+        return super().update(dt)
+
+    def transition(self, output_levels, reset_too_short, le_too_short, clock_too_short, ce_too_short):
+        assert len(output_levels) == len(self.outputs)
+        if reset_too_short or le_too_short or clock_too_short or ce_too_short:
+            self.terminal_count.set(UNKNOWN, True)
+            for o, l in zip(self.outputs, output_levels):
+                o.set(UNKNOWN, True)
+        else:
+            if all((o == HI for o in output_levels)):
+                self.terminal_count.set(HI, True)
+            elif all((o in [LO, HI] for o in output_levels)):
+                self.terminal_count.set(LO, True)
+            else:
+                self.terminal_count.set(UNKNOWN, True)
+            for o, l in zip(self.outputs, output_levels):
                 o.set(l, True)
