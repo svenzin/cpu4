@@ -2,6 +2,9 @@ from typing import Optional
 import math
 import itertools
 
+from dataclasses import dataclass
+
+
 # time
 class Timestamp:
     def __init__(self, nanoseconds: int):
@@ -596,6 +599,14 @@ class DtypeFlipFlop(Base):
             else:
                 o.set(l, True)
 
+
+@dataclass
+class BinaryCounterPayload:
+    reset_too_short: bool
+    le_too_short: bool
+    clock_too_short: bool
+    ce_too_short: bool
+
 class BinaryCounter(Base):
     def __init__(self, inputs, clock, reset, ce, le, tp, tt, tw, tr, ts, th):
         super().__init__()
@@ -632,32 +643,32 @@ class BinaryCounter(Base):
         inputs = logic_levels(self.inputs)
         if inputs != self.previous_inputs_values:
             for transition in self.transitions:
-                if transition.payload[2] is not None and transition.elapsed_dt < self.th:
-                    transition.payload[2] = True
+                if transition.payload[1].le_too_short is not None and transition.elapsed_dt < self.th:
+                    transition.payload[1].le_too_short = True
         clock = self.clock.logic_level()
         if clock != self.previous_clock_value:
             if self.clock_dt < self.tr:
                 for transition in self.transitions:
-                    assert transition.payload[3] is not None
-                    transition.payload[3] = True
+                    assert transition.payload[1].clock_too_short is not None
+                    transition.payload[1].clock_too_short = True
         reset = self.reset.logic_level()
         if reset != self.previous_reset_value:
             if self.previous_reset_value == HI and self.reset_dt < self.tr:
                 for transition in self.transitions:
-                    if transition.payload[1] is not None:
-                        transition.payload[1] = True
+                    if transition.payload[1].reset_too_short is not None:
+                        transition.payload[1].reset_too_short = True
         le = self.le.logic_level()
         if le != self.previous_le_value:
             if self.previous_le_value == HI:
                 for transition in self.transitions:
-                    if transition.payload[2] is not None and transition.elapsed_dt < self.th:
-                        transition.payload[2] = True
+                    if transition.payload[1].le_too_short is not None and transition.elapsed_dt < self.th:
+                        transition.payload[1].le_too_short = True
         ce = self.ce.logic_level()
         if ce != self.previous_ce_value:
             if self.previous_ce_value == HI:
                 for transition in self.transitions:
-                    if transition.payload[4] is not None and transition.elapsed_dt < self.th:
-                        transition.payload[4] = True
+                    if transition.payload[1].ce_too_short is not None and transition.elapsed_dt < self.th:
+                        transition.payload[1].ce_too_short = True
         if clock != self.previous_clock_value:
             if self.clock_dt < self.tw:
                 self.previous_clock_value = UNKNOWN
@@ -666,7 +677,7 @@ class BinaryCounter(Base):
                     inputs = logic_levels(self.inputs)
                 else:
                     inputs = [UNKNOWN for _ in self.inputs]
-                self.append_transition(self.tp, inputs, None, False, False, None)
+                self.append_transition(self.tp, inputs, BinaryCounterPayload(None, False, False, None))
             elif reset == LO and ce == HI and clock == HI:
                 if self.previous_clock_value == LO and self.ce_dt >= self.ts:
                     carry = HI
@@ -683,7 +694,7 @@ class BinaryCounter(Base):
                             outputs.append(UNKNOWN)
                 else:
                     outputs = [UNKNOWN for _ in self.outputs]
-                self.append_transition(self.tp, outputs, None, None, False, False)
+                self.append_transition(self.tp, outputs, BinaryCounterPayload(None, None, False, False))
             self.clock_dt = Duration(0)
             self.previous_clock_value = clock
         if inputs != self.previous_inputs_values:
@@ -694,10 +705,10 @@ class BinaryCounter(Base):
                 pass
             elif reset == HI:
                 inputs = [LO for _ in self.inputs]
-                self.append_transition(self.tp, inputs, False, None, False, None)
+                self.append_transition(self.tp, inputs, BinaryCounterPayload(False, None, False, None))
             else:
                 inputs = [UNKNOWN for _ in self.inputs]
-                self.append_transition(self.tp, inputs, False, None, False, None)
+                self.append_transition(self.tp, inputs, BinaryCounterPayload(False, None, False, None))
             self.previous_reset_value = reset
             self.reset_dt = Duration(0)
         if le != self.previous_le_value:
@@ -716,9 +727,12 @@ class BinaryCounter(Base):
         self.le_dt += dt
         return super().update(dt)
 
-    def transition(self, output_levels, reset_too_short, le_too_short, clock_too_short, ce_too_short):
+    def transition(self, output_levels, payload: BinaryCounterPayload): # reset_too_short, le_too_short, clock_too_short, ce_too_short):
         assert len(output_levels) == len(self.outputs)
-        if reset_too_short or le_too_short or clock_too_short or ce_too_short:
+        if (payload.reset_too_short
+            or payload.le_too_short
+            or payload.clock_too_short
+            or payload.ce_too_short):
             self.terminal_count.set(UNKNOWN, True)
             for o, l in zip(self.outputs, output_levels):
                 o.set(UNKNOWN, True)
