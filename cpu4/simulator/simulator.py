@@ -2,6 +2,7 @@ from typing import Optional
 import math
 import itertools
 
+from collections import namedtuple
 from dataclasses import dataclass
 
 
@@ -133,108 +134,79 @@ def base_is_driving(base):
 def logic_level(state):
     if state is None:
         return ERROR
-    return base_logic_level(state.value)
+    return base_logic_level(state.value())
 
 def logic_levels(states):
-    return tuple((base_logic_level(s.value) for s in states))
+    return tuple((base_logic_level(s.value()) for s in states))
 
 @dataclass
 class BaseState:
     value: BaseLevel
-
-STATE_UNDEFINED = BaseState(UNDEFINED)
-STATE_LO = BaseState(LO)
-STATE_HI = BaseState(HI)
-STATE_Z = BaseState(Z)
-STATE_UNKNOWN = BaseState(UNKNOWN)
-STATE_CONFLICT = BaseState(CONFLICT)
-
-class StateSpan(BaseState):
-    def __init__(self, *args):
-        super().__init__(*args)
+    t_begin: Timestamp
+    t_end: Optional[Timestamp]
+    
+    def __init__(self, value):
+        self.value = value
         self.t_begin = system.timestamp.copy()
         self.t_end = None
-        self.previous = None
-        self.next = None
-
-    def end_and_link(self, next: 'StateSpan'):
-        assert self.t_end is None
-        assert self.next is None
-        assert next is not None
-        next.previous = self
-        self.t_end = next.t_begin
-        self.next = next
-    
-    def duration(self) -> Duration:
-        try:
-            return self.t_end - self.t_begin
-        except TypeError:
-            return system.timestamp - self.t_begin
-
-class StateSample:
-    def __init__(self, state: 'State'):
-        self.t = system.timestamp.copy()
-        self.span = state._get()
-        self.state = state
-
-    @property
-    def value(self) -> BaseLevel:
-        return self.span.value
-    
-    def previous(self) -> StateSpan:
-        level = logic_level(self.span)
-        s = self.span.previous
-        while s is not None and logic_level(s) == level:
-            s = s.previous
-        return s
-    
-    def setup(self) -> Duration:
-        d = self.t - self.span.t_begin
-        level = logic_level(self.span)
-        s = self.span.previous
-        while s is not None and logic_level(s) == level:
-            d += s.duration()
-            s = s.previous
-        return d
-    
-    def hold(self) -> Duration:
-        try:
-            d = self.span.t_end - self.t
-        except TypeError:
-            d = system.timestamp - self.t
-        level = logic_level(self.span)
-        s = self.span.next
-        while s is not None and logic_level(s) == level:
-            d += s.duration()
-            s = s.next
-        return d
-
-    def has_changed(self) -> bool:
-        return self.span.t_begin == system.timestamp
-    
 
 class State:
-    def __init__(self, value=UNDEFINED):
-        s = StateSpan(value)
-        self.timeline = [s]
+    def __init__(self, value: BaseLevel=None):
+        if value is None:
+            self.i = None
+            self.timeline = []
+        else:
+            self.i = 0
+            self.timeline = [BaseState(value)]
     
-    def set(self, value):
-        s = StateSpan(value)
-        self._get().end_and_link(s)
-        self.timeline.append(s)
+    def value(self):
+        return self.timeline[self.i].value
 
-    def sample(self) -> StateSample:
-        return StateSample(self)
-    
-    def _get(self) -> StateSpan:
-        return self.timeline[-1]
-    
-    @property
-    def value(self) -> BaseLevel:
-        return self._get().value
-    
     def duration(self) -> Duration:
-        return self._get().duration()
+        desc = self.timeline[self.i]
+        try:
+            return desc.t_end - desc.t_begin
+        except TypeError:
+            return system.timestamp - desc.t_begin
+    
+    def set(self, value: BaseLevel):
+        assert self.i == len(self.timeline) - 1
+        desc = self.timeline[self.i]
+        if value != desc.value:
+            desc.t_end = system.timestamp.copy()
+            self.i += 1
+            self.timeline.append(BaseState(value))
+    
+    def has_changed(self) -> bool:
+        assert self.i == len(self.timeline) - 1
+        return self.timeline[self.i].t_begin == system.timestamp
+
+    def _get(self, offset) -> 'State':
+        s = State()
+        s.i = self.i + offset
+        s.timeline = self.timeline
+        return s
+    
+    def previous(self) -> 'State':
+        return self._get(-1)
+    
+    def sample(self) -> 'State':
+        return self._get(0)
+    
+    def setup(self, t: Timestamp) -> Duration:
+        desc = self.timeline[self.i]
+        assert desc.t_begin <= t
+        assert desc.t_end is None or t <= desc.t_end
+        return t - desc.t_begin
+    
+    def hold(self, t: Timestamp) -> Duration:
+        desc = self.timeline[self.i]
+        assert desc.t_begin <= t
+        assert desc.t_end is None or t <= desc.t_end
+        try:
+            return desc.t_end - t
+        except TypeError:
+            return system.timestamp - t
 
 # system
 
@@ -283,12 +255,12 @@ class System:
 
 system = System()
 
-STATE_UNDEFINED = State(UNDEFINED)
-STATE_LO = State(LO)
-STATE_HI = State(HI)
-STATE_Z = State(Z)
-STATE_UNKOWN = State(UNKNOWN)
-STATE_CONFLICT = State(CONFLICT)
+STATE_UNDEFINED = BaseState(UNDEFINED)
+STATE_LO = BaseState(LO)
+STATE_HI = BaseState(HI)
+STATE_Z = BaseState(Z)
+STATE_UNKNOWN = BaseState(UNKNOWN)
+STATE_CONFLICT = BaseState(CONFLICT)
 
 # clock
 class Clock:
@@ -369,7 +341,7 @@ class Operator:
             try:
                 outputs = self.op[inputs]
             except KeyError:
-                outputs = self.output_count * [STATE_UNKOWN]
+                outputs = self.output_count * [STATE_UNKNOWN]
             current_outputs = logic_levels(outputs)
             if self.previous_outputs != current_outputs:
                 self.transitions.append((outputs, self.tp))
@@ -728,10 +700,11 @@ class BinaryCounter(Base):
         self.ts = ts
         self.th = th
 
-        self.outputs = [State() for _ in inputs]
-        self.terminal_count = State()
+        self.outputs = [State(UNDEFINED) for _ in inputs]
+        self.terminal_count = State(UNDEFINED)
 
     def next_update(self):
+        now = system.timestamp
         snapshot = [s.sample() for s in [self.clock, self.reset, self.ce, self.le] + self.inputs]
         clock, reset, ce, le, *inputs = snapshot
         previous_clock = clock.previous()
@@ -744,9 +717,9 @@ class BinaryCounter(Base):
             if (previous_clock.duration() >= self.tw
                 and logic_level(reset) == LO
                 and logic_level(le) == HI):
-                if (reset.setup() >= self.tr
-                    and le.setup() >= self.ts
-                    and all((input.setup() >= self.ts for input in inputs))):
+                if (reset.setup(now) >= self.tr
+                    and le.setup(now) >= self.ts
+                    and all((input.setup(now) >= self.ts for input in inputs))):
                     desired_outputs = logic_levels(self.inputs)
                 else:
                     desired_outputs = [UNKNOWN for _ in self.inputs]
@@ -757,12 +730,12 @@ class BinaryCounter(Base):
             elif (previous_clock.duration() >= self.tw
                   and logic_level(reset) == LO
                   and logic_level(ce) == HI):
-                if(reset.setup() >= self.tr
-                  and ce.setup() >= self.ts):
+                if(reset.setup(now) >= self.tr
+                  and ce.setup(now) >= self.ts):
                     carry = HI
                     desired_outputs = []
                     for bit in self.outputs:
-                        b = bit.value
+                        b = bit.value()
                         if b == LO:
                             desired_outputs.append(carry)
                             carry = LO
@@ -800,6 +773,7 @@ class BinaryCounter(Base):
         return super().next_update()
     
     def transition(self, transition: Transition):
+        t = transition.timestamp
         output_levels, snapshot, scenario = transition.payload
         clock, reset, ce, le, *inputs = snapshot
         assert len(output_levels) == len(self.outputs)
@@ -807,22 +781,22 @@ class BinaryCounter(Base):
         if scenario == 'reset':
             is_stable = (is_stable
                          and logic_level(reset) == HI
-                         and reset.hold() >= self.tw)
+                         and reset.hold(t) >= self.tw)
         elif scenario == 'load':
             is_stable = (is_stable
                         and logic_level(le) == HI
-                        and le.hold() >= self.th
+                        and le.hold(t) >= self.th
                         and logic_level(clock) == HI
-                        and clock.hold() >= self.tw)
+                        and clock.hold(t) >= self.tw)
             for input in inputs:
                 is_stable = (is_stable
-                            and input.hold() >= self.th)
+                            and input.hold(t) >= self.th)
         elif scenario == 'count':
             is_stable = (is_stable
                         and logic_level(ce) == HI
-                        and ce.hold() >= self.th
+                        and ce.hold(t) >= self.th
                         and logic_level(clock) == HI
-                        and clock.hold() >= self.tw)
+                        and clock.hold(t) >= self.tw)
         elif scenario == 'invalid':
             is_stable = False
         if is_stable:

@@ -5,7 +5,7 @@ from cpu4.simulator.simulator import LO, HI, TLM, TMH, THM, TML, UNDEFINED, Z, U
 
 class OperatorTestCase(unittest.TestCase):
     def assertStatesEqual(self, expected, actual):
-        self.assertEqual(expected, [s.value for s in actual])
+        self.assertEqual(expected, [s.value() for s in actual])
 
     def assertTimestamp(self, d):
         self.assertEqual(d.d, s.system.timestamp.t)
@@ -508,10 +508,10 @@ class TestDtypeFlipFlop(OperatorTestCase):
         self.Th = s.ms(6)
         self.Tshort = s.ms(1)
         self.Tmax = s.s(1)
-        clock = s.State(LO, True)
-        input = s.State(LO, True)
-        reset = s.State(LO, True)
-        enable = s.State(LO, True)
+        clock = s.State(LO)
+        input = s.State(LO)
+        reset = s.State(LO)
+        enable = s.State(LO)
         ff = s.DtypeFlipFlop([input], clock, reset, enable, tp=self.Tp, tt=self.Tt, tw=self.Tw, tr=self.Tr, ts=self.Ts, th=self.Th)
         return clock, input, reset, enable, ff
 
@@ -729,11 +729,11 @@ class TestBinaryCounter(OperatorTestCase):
         self.Th = s.ms(5)
         self.Tshort = s.us(1)
         self.Tmax = s.s(1)
-        input = s.State(LO, True)
-        clock = s.State(LO, True)
-        reset = s.State(LO, True)
-        count_enable = s.State(LO, True)
-        load_enable = s.State(LO, True)
+        input = s.State(LO)
+        clock = s.State(LO)
+        reset = s.State(LO)
+        count_enable = s.State(LO)
+        load_enable = s.State(LO)
         ff = s.BinaryCounter([input], clock, reset, count_enable, load_enable, tp=self.Tp, tt=self.Tt, tw=self.Tw, tr=self.Tr, ts=self.Ts, th=self.Th)
         return input, clock, reset, count_enable, load_enable, ff, s.system
 
@@ -952,7 +952,7 @@ class TestBinaryCounter(OperatorTestCase):
         system.next_update()
         system.update(self.Tp)
         self.assertStatesEqual([LO], ff.outputs)
-        self.assertEqual(LO, ff.terminal_count.value)
+        self.assertEqual(LO, ff.terminal_count.value())
         
         clock.set(LO)
         le.set(LO)
@@ -963,7 +963,7 @@ class TestBinaryCounter(OperatorTestCase):
         self.assertEqual(self.Tp, system.next_update())
         system.update(self.Tp)
         self.assertStatesEqual([HI], ff.outputs)
-        self.assertEqual(HI, ff.terminal_count.value)
+        self.assertEqual(HI, ff.terminal_count.value())
         self.assertEqual(None, system.next_update())
         
         clock.set(LO)
@@ -973,34 +973,34 @@ class TestBinaryCounter(OperatorTestCase):
         self.assertEqual(self.Tp, system.next_update())
         system.update(self.Tp)
         self.assertStatesEqual([LO], ff.outputs)
-        self.assertEqual(LO, ff.terminal_count.value)
+        self.assertEqual(LO, ff.terminal_count.value())
         self.assertEqual(None, system.next_update())
 
     def test_count_unknown_values(self):
         input, clock, reset, ce, le, ff, system = self.init()
         ce.set(HI)
         self.assertStatesEqual([UNDEFINED], ff.outputs)
-        self.assertEqual(UNDEFINED, ff.terminal_count.value)
+        self.assertEqual(UNDEFINED, ff.terminal_count.value())
         self.assertEqual(None, system.next_update())
         system.update(self.Tmax)
         clock.set(HI)
         self.assertStatesEqual([UNDEFINED], ff.outputs)
-        self.assertEqual(UNDEFINED, ff.terminal_count.value)
+        self.assertEqual(UNDEFINED, ff.terminal_count.value())
         self.assertEqual(self.Tp, system.next_update())
         system.update(self.Tp)
         self.assertStatesEqual([UNKNOWN], ff.outputs)
-        self.assertEqual(UNKNOWN, ff.terminal_count.value)
+        self.assertEqual(UNKNOWN, ff.terminal_count.value())
         self.assertEqual(None, system.next_update())
         clock.set(LO)
         self.assertEqual(None, system.next_update())
         system.update(self.Tmax)
         clock.set(HI)
         self.assertStatesEqual([UNKNOWN], ff.outputs)
-        self.assertEqual(UNKNOWN, ff.terminal_count.value)
+        self.assertEqual(UNKNOWN, ff.terminal_count.value())
         self.assertEqual(self.Tp, system.next_update())
         system.update(self.Tp)
         self.assertStatesEqual([UNKNOWN], ff.outputs)
-        self.assertEqual(UNKNOWN, ff.terminal_count.value)
+        self.assertEqual(UNKNOWN, ff.terminal_count.value())
         self.assertEqual(None, system.next_update())
 
     def test_count_enable_setup_too_short(self):
@@ -1012,7 +1012,7 @@ class TestBinaryCounter(OperatorTestCase):
         system.next_update()
         system.update(self.Tp)
         self.assertStatesEqual([LO], ff.outputs)
-        self.assertEqual(LO, ff.terminal_count.value)
+        self.assertEqual(LO, ff.terminal_count.value())
         
         clock.set(LO)
         le.set(LO)
@@ -1025,7 +1025,7 @@ class TestBinaryCounter(OperatorTestCase):
         self.assertEqual(self.Tp, system.next_update())
         system.update(self.Tp)
         self.assertStatesEqual([UNKNOWN], ff.outputs)
-        self.assertEqual(UNKNOWN, ff.terminal_count.value)
+        self.assertEqual(UNKNOWN, ff.terminal_count.value())
 
     def test_count_enable_hold_too_short(self):
         input, clock, reset, ce, le, ff, system = self.init()
@@ -1036,7 +1036,7 @@ class TestBinaryCounter(OperatorTestCase):
         system.next_update()
         system.update(self.Tp)
         self.assertStatesEqual([LO], ff.outputs)
-        self.assertEqual(LO, ff.terminal_count.value)
+        self.assertEqual(LO, ff.terminal_count.value())
         
         clock.set(LO)
         le.set(LO)
@@ -1050,4 +1050,4 @@ class TestBinaryCounter(OperatorTestCase):
         self.assertEqual(self.Tp - self.Tshort, system.next_update())
         system.update(self.Tp - self.Tshort)
         self.assertStatesEqual([UNKNOWN], ff.outputs)
-        self.assertEqual(UNKNOWN, ff.terminal_count.value)
+        self.assertEqual(UNKNOWN, ff.terminal_count.value())
