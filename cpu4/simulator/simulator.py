@@ -13,12 +13,24 @@ class Timestamp:
     def __repr__(self):
         return f'Timestamp({repr(self.t / 1e9)})'
     
+    def __sub__(self, other: 'Timestamp'):
+        return Duration(self.t - other.t)
+    
     def __iadd__(self, dt: 'Duration'):
         self.t += dt.d
         return self
     
-    def __le__(self, other):
+    def __eq__(self, other: 'Timestamp'):
+        return self.t == other.t
+    
+    def __lt__(self, other: 'Timestamp'):
+        return self.t < other.t
+    
+    def __le__(self, other: 'Timestamp'):
         return self.t <= other.t
+    
+    def copy(self):
+        return Timestamp(self.t)
 
 class Duration:
     def __init__(self, nanoseconds: int):
@@ -88,6 +100,7 @@ def mhz(f: float):
     return hz(1e6 * f)
 
 # bases
+BaseLevel = str
 LO = 'LO'
 HI = 'HI'
 TLM = 'TLM'
@@ -98,6 +111,132 @@ Z = 'Z'
 CONFLICT = 'X'
 UNKNOWN = '?'
 UNDEFINED = 'U'
+ERROR = '!'
+PULL_UP = 'P_HI'
+PULL_DOWN = 'P_LO'
+
+LEVELS_LO = (LO, TLM, TML)
+LEVELS_HI = (HI, THM, TMH)
+
+def base_logic_level(base):
+    if base in LEVELS_LO:
+        return LO
+    if base in LEVELS_HI:
+        return HI
+    return base
+
+def base_is_driving(base):
+    if base in (UNDEFINED, Z, PULL_UP, PULL_DOWN):
+        return False
+    return True
+
+def logic_level(state):
+    if state is None:
+        return ERROR
+    return base_logic_level(state.value)
+
+def logic_levels(states):
+    return tuple((base_logic_level(s.value) for s in states))
+
+@dataclass
+class BaseState:
+    value: BaseLevel
+
+STATE_UNDEFINED = BaseState(UNDEFINED)
+STATE_LO = BaseState(LO)
+STATE_HI = BaseState(HI)
+STATE_Z = BaseState(Z)
+STATE_UNKNOWN = BaseState(UNKNOWN)
+STATE_CONFLICT = BaseState(CONFLICT)
+
+class StateSpan(BaseState):
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.t_begin = system.timestamp.copy()
+        self.t_end = None
+        self.previous = None
+        self.next = None
+
+    def end_and_link(self, next: 'StateSpan'):
+        assert self.t_end is None
+        assert self.next is None
+        assert next is not None
+        next.previous = self
+        self.t_end = next.t_begin
+        self.next = next
+    
+    def duration(self) -> Duration:
+        try:
+            return self.t_end - self.t_begin
+        except TypeError:
+            return system.timestamp - self.t_begin
+
+class StateSample:
+    def __init__(self, state: 'State'):
+        self.t = system.timestamp.copy()
+        self.span = state._get()
+        self.state = state
+
+    @property
+    def value(self) -> BaseLevel:
+        return self.span.value
+    
+    def previous(self) -> StateSpan:
+        level = logic_level(self.span)
+        s = self.span.previous
+        while s is not None and logic_level(s) == level:
+            s = s.previous
+        return s
+    
+    def setup(self) -> Duration:
+        d = self.t - self.span.t_begin
+        level = logic_level(self.span)
+        s = self.span.previous
+        while s is not None and logic_level(s) == level:
+            d += s.duration()
+            s = s.previous
+        return d
+    
+    def hold(self) -> Duration:
+        try:
+            d = self.span.t_end - self.t
+        except TypeError:
+            d = system.timestamp - self.t
+        level = logic_level(self.span)
+        s = self.span.next
+        while s is not None and logic_level(s) == level:
+            d += s.duration()
+            s = s.next
+        return d
+
+    def has_changed(self) -> bool:
+        return self.span.t_begin == system.timestamp
+    
+
+class State:
+    def __init__(self, value=UNDEFINED):
+        s = StateSpan(value)
+        self.timeline = [s]
+    
+    def set(self, value):
+        s = StateSpan(value)
+        self._get().end_and_link(s)
+        self.timeline.append(s)
+
+    def sample(self) -> StateSample:
+        return StateSample(self)
+    
+    def _get(self) -> StateSpan:
+        return self.timeline[-1]
+    
+    @property
+    def value(self) -> BaseLevel:
+        return self._get().value
+    
+    def duration(self) -> Duration:
+        return self._get().duration()
+
+# system
 
 class System:
     def __init__(self, m=0.5) -> None:
@@ -132,9 +271,9 @@ class System:
         return Duration(current_dt)
     
     def update(self, dt: Duration):
+        self.timestamp += dt
         for element in self.elements.values():
             element.update(dt)
-        self.timestamp += dt
     
     def step(self):
         current_dt = self.next_update()
@@ -142,47 +281,14 @@ class System:
             self.update(current_dt)
         return current_dt
 
-class BaseState:
-    def __init__(self, value, drive):
-        self.value = value
-        self.is_driving = drive
-
-    def __repr__(self):
-        return f'BaseState({repr(self.value)}, {repr(self.is_driving)})'
-    
-    def logic_level(self):
-        if self.value in [LO, TLM, TML]:
-            return LO
-        if self.value in [HI, THM, TMH]:
-            return HI
-        return self.value
-
-def logic_levels(states: list[BaseState]):
-    return tuple((s.logic_level() for s in states))
-
-class State(BaseState):
-    def __init__(self, value=UNDEFINED, drive=False):
-        self.timeline = []
-        self.set(value, drive)
-        
-    def __repr__(self):
-        return f'State({repr(self.value)}, {repr(self.is_driving)})'
-
-    def set(self, value, drive=False):
-        self.is_driving = drive
-        self.value = value
-        if len(self.timeline) > 0:
-            assert self.timeline[-1][0] <= system.timestamp
-        self.timeline.append((system.timestamp, self.value, self.is_driving))
-
-STATE_UNDEFINED = BaseState(UNDEFINED, False)
-STATE_LO = BaseState(LO, True)
-STATE_HI = BaseState(HI, True)
-STATE_Z = BaseState(Z, False)
-STATE_UNKOWN = BaseState(UNKNOWN, True)
-STATE_CONFLICT = BaseState(CONFLICT, True)
-
 system = System()
+
+STATE_UNDEFINED = State(UNDEFINED)
+STATE_LO = State(LO)
+STATE_HI = State(HI)
+STATE_Z = State(Z)
+STATE_UNKOWN = State(UNKNOWN)
+STATE_CONFLICT = State(CONFLICT)
 
 # clock
 class Clock:
@@ -203,14 +309,14 @@ class Clock:
         dt_phase = phase / 360 * period
         if dt_phase == Duration(0):
             self.dt = self.t_hi
-            self.clock.set(HI, True)
+            self.clock.set(HI)
         elif dt_phase <= self.t_lo:
             self.dt = dt_phase
-            self.clock.set(LO, True)
+            self.clock.set(LO)
         else:
             self.dt = dt_phase - self.t_lo
             assert self.dt <= self.t_hi
-            self.clock.set(HI, True)
+            self.clock.set(HI)
         assert self.dt >= Duration(0)
         assert self.clock.value in [HI, LO]
         system.register_element(self, 'clock')
@@ -224,10 +330,10 @@ class Clock:
         self.dt -= dt
         if self.dt <= s(0):
             if self.clock.value == LO:
-                self.clock.set(HI, True)
+                self.clock.set(HI)
                 self.dt += self.t_hi
             elif self.clock.value == HI:
-                self.clock.set(LO, True)
+                self.clock.set(LO)
                 self.dt += self.t_lo
             else:
                 assert False
@@ -283,7 +389,7 @@ class Operator:
             dt_transition -= dt
             if dt_transition <= Duration(0):
                 for output, value in zip(self.outputs, values):
-                    output.set(value.value, value.is_driving)
+                    output.set(value.value)
             else:
                 transitions.append((values, dt_transition))
         self.transitions = transitions
@@ -392,13 +498,13 @@ class Decoder:
         self.outputs = [e.output for e in self.enablers]
 
 class EnablerOperator(Operator):
-    def __init__(self, input: State, en: State, tp: Duration, tt: Duration, disabled: BaseState):
+    def __init__(self, input: State, en: State, tp: Duration, tt: Duration, disabled: State):
         super().__init__([en], {(LO,): (disabled,),
                                 (HI,): (input,)}, tp, tt, 'enabler')
         self.output = self.outputs[0]
 
 class Enabler:
-    def __init__(self, input: State, en: State, tp_en: Duration, tp_dis: Duration, tt_en: Duration, tt_dis: Duration, disabled: BaseState):
+    def __init__(self, input: State, en: State, tp_en: Duration, tp_dis: Duration, tt_en: Duration, tt_dis: Duration, disabled: State):
         self.input = input
 
         self.en = en
@@ -460,11 +566,11 @@ class Enabler:
                     transitions.append((value, dt_transition))
             self.transitions = transitions
         if self.output_enabled is None:
-            self.output.set(UNKNOWN, True)
+            self.output.set(UNKNOWN)
         elif self.output_enabled:
-            self.output.set(self.input.value, True)
+            self.output.set(self.input.value)
         else:
-            self.output.set(self.disabled_state.value, False)
+            self.output.set(self.disabled_state.value)
 
 class Buffer3S:
     def __init__(self, input: State, tp: Duration, tt: Duration, en: State, t_en: Duration, t_dis: Duration):
@@ -473,7 +579,8 @@ class Buffer3S:
         self.output = self.enabler.output
 
 class Transition:
-    def __init__(self, dt: Duration, *payload):
+    def __init__(self, t: Timestamp, dt: Duration, *payload):
+        self.timestamp = t
         self.remaining_dt = dt
         self.elapsed_dt = Duration(0)
         self.payload = list(payload)
@@ -481,12 +588,13 @@ class Transition:
 class Base:
     def __init__(self):
         self.transitions: list[Transition] = []
+        system.register_element(self, "")
     
     def transition(self, payload):
         raise NotImplementedError()
 
     def append_transition(self, dt, *payload):
-        self.transitions.append(Transition(dt, *payload))
+        self.transitions.append(Transition(system.timestamp.copy(), dt, *payload))
 
     def next_update(self):
         if len(self.transitions) > 0:
@@ -501,7 +609,7 @@ class Base:
         
         if len(self.transitions) > 0 and self.transitions[0].remaining_dt <= Duration(0):
             transition = self.transitions.pop(0)
-            self.transition(*transition.payload)
+            self.transition(transition)
 
 class DtypeFlipFlop(Base):
     def __init__(self, inputs, clock, reset, enable, tp, tt, tw, tr, ts, th):
@@ -595,17 +703,10 @@ class DtypeFlipFlop(Base):
         assert len(output_levels) == len(self.outputs)
         for o, l in zip(self.outputs, output_levels):
             if reset_too_short or enable_too_short or clock_too_short:
-                o.set(UNKNOWN, True)
+                o.set(UNKNOWN)
             else:
-                o.set(l, True)
+                o.set(l)
 
-
-@dataclass
-class BinaryCounterPayload:
-    reset_too_short: bool
-    le_too_short: bool
-    clock_too_short: bool
-    ce_too_short: bool
 
 class BinaryCounter(Base):
     def __init__(self, inputs, clock, reset, ce, le, tp, tt, tw, tr, ts, th):
@@ -615,20 +716,11 @@ class BinaryCounter(Base):
         assert th <= tp
         assert tr <= tp
         self.inputs = inputs
-        self.inputs_dt = Duration(0)
-        self.previous_inputs_values = logic_levels(inputs)
         self.clock = clock
-        self.clock_dt = Duration(0)
-        self.previous_clock_value = clock.logic_level()
         self.reset = reset
-        self.reset_dt = Duration(0)
-        self.previous_reset_value = reset.logic_level()
         self.ce = ce
-        self.ce_dt = Duration(0)
-        self.previous_ce_value = ce.logic_level()
         self.le = le
-        self.le_dt = Duration(0)
-        self.previous_le_value = le.logic_level()
+
         self.tp = tp
         self.tt = tt
         self.tw = tw
@@ -640,108 +732,109 @@ class BinaryCounter(Base):
         self.terminal_count = State()
 
     def next_update(self):
-        inputs = logic_levels(self.inputs)
-        if inputs != self.previous_inputs_values:
-            for transition in self.transitions:
-                if transition.payload[1].le_too_short is not None and transition.elapsed_dt < self.th:
-                    transition.payload[1].le_too_short = True
-        clock = self.clock.logic_level()
-        if clock != self.previous_clock_value:
-            if self.clock_dt < self.tr:
-                for transition in self.transitions:
-                    assert transition.payload[1].clock_too_short is not None
-                    transition.payload[1].clock_too_short = True
-        reset = self.reset.logic_level()
-        if reset != self.previous_reset_value:
-            if self.previous_reset_value == HI and self.reset_dt < self.tr:
-                for transition in self.transitions:
-                    if transition.payload[1].reset_too_short is not None:
-                        transition.payload[1].reset_too_short = True
-        le = self.le.logic_level()
-        if le != self.previous_le_value:
-            if self.previous_le_value == HI:
-                for transition in self.transitions:
-                    if transition.payload[1].le_too_short is not None and transition.elapsed_dt < self.th:
-                        transition.payload[1].le_too_short = True
-        ce = self.ce.logic_level()
-        if ce != self.previous_ce_value:
-            if self.previous_ce_value == HI:
-                for transition in self.transitions:
-                    if transition.payload[1].ce_too_short is not None and transition.elapsed_dt < self.th:
-                        transition.payload[1].ce_too_short = True
-        if clock != self.previous_clock_value:
-            if self.clock_dt < self.tw:
-                self.previous_clock_value = UNKNOWN
-            if reset == LO and le == HI and clock == HI:
-                if self.previous_clock_value == LO and self.inputs_dt >= self.ts and self.le_dt >= self.ts and self.reset_dt >= self.tr:
-                    inputs = logic_levels(self.inputs)
+        snapshot = [s.sample() for s in [self.clock, self.reset, self.ce, self.le] + self.inputs]
+        clock, reset, ce, le, *inputs = snapshot
+        previous_clock = clock.previous()
+        is_clocked = (clock.has_changed()
+                      and logic_level(clock) == HI
+                      and logic_level(previous_clock) == LO
+                      # inhibit clock during reset
+                      and logic_level(reset) == LO)
+        if is_clocked:
+            if (previous_clock.duration() >= self.tw
+                and logic_level(reset) == LO
+                and logic_level(le) == HI):
+                if (reset.setup() >= self.tr
+                    and le.setup() >= self.ts
+                    and all((input.setup() >= self.ts for input in inputs))):
+                    desired_outputs = logic_levels(self.inputs)
                 else:
-                    inputs = [UNKNOWN for _ in self.inputs]
-                self.append_transition(self.tp, inputs, BinaryCounterPayload(None, False, False, None))
-            elif reset == LO and ce == HI and clock == HI:
-                if self.previous_clock_value == LO and self.ce_dt >= self.ts:
+                    desired_outputs = [UNKNOWN for _ in self.inputs]
+                self.append_transition(self.tp,
+                                       desired_outputs,
+                                       snapshot,
+                                       'load')
+            elif (previous_clock.duration() >= self.tw
+                  and logic_level(reset) == LO
+                  and logic_level(ce) == HI):
+                if(reset.setup() >= self.tr
+                  and ce.setup() >= self.ts):
                     carry = HI
-                    outputs = []
+                    desired_outputs = []
                     for bit in self.outputs:
-                        if bit.value == LO:
-                            outputs.append(carry)
+                        b = bit.value
+                        if b == LO:
+                            desired_outputs.append(carry)
                             carry = LO
-                        elif bit.value == HI and carry == LO:
-                            outputs.append(HI)
-                        elif bit.value == HI and carry == HI:
-                            outputs.append(LO)
+                        elif b == HI and carry == LO:
+                            desired_outputs.append(HI)
+                        elif b == HI and carry == HI:
+                            desired_outputs.append(LO)
                         else:
-                            outputs.append(UNKNOWN)
+                            desired_outputs.append(UNKNOWN)
                 else:
-                    outputs = [UNKNOWN for _ in self.outputs]
-                self.append_transition(self.tp, outputs, BinaryCounterPayload(None, None, False, False))
-            self.clock_dt = Duration(0)
-            self.previous_clock_value = clock
-        if inputs != self.previous_inputs_values:
-            self.previous_inputs_values = inputs
-            self.inputs_dt = Duration(0)
-        if reset != self.previous_reset_value:
+                    desired_outputs = [UNKNOWN for _ in self.outputs]
+                self.append_transition(self.tp,
+                                       desired_outputs,
+                                       snapshot,
+                                       'count')
+            else:
+                desired_outputs = [UNKNOWN for _ in self.outputs]
+                self.append_transition(self.tp,
+                                       desired_outputs,
+                                       snapshot,
+                                       'invalid')
+        if reset.has_changed():
+            reset = logic_level(reset)
             if reset == LO:
                 pass
-            elif reset == HI:
-                inputs = [LO for _ in self.inputs]
-                self.append_transition(self.tp, inputs, BinaryCounterPayload(False, None, False, None))
             else:
-                inputs = [UNKNOWN for _ in self.inputs]
-                self.append_transition(self.tp, inputs, BinaryCounterPayload(False, None, False, None))
-            self.previous_reset_value = reset
-            self.reset_dt = Duration(0)
-        if le != self.previous_le_value:
-            self.previous_le_value = le
-            self.le_dt = Duration(0)
-        if ce != self.previous_ce_value:
-            self.previous_ce_value = ce
-            self.ce_dt = Duration(0)
+                if reset == HI:
+                    desired_outputs = [LO for _ in self.inputs]
+                else:
+                    desired_outputs = [UNKNOWN for _ in self.inputs]
+                self.append_transition(self.tp,
+                                        desired_outputs,
+                                        snapshot,
+                                        'reset')
         return super().next_update()
     
-    def update(self, dt):
-        self.inputs_dt += dt
-        self.clock_dt += dt
-        self.reset_dt += dt
-        self.ce_dt += dt
-        self.le_dt += dt
-        return super().update(dt)
-
-    def transition(self, output_levels, payload: BinaryCounterPayload): # reset_too_short, le_too_short, clock_too_short, ce_too_short):
+    def transition(self, transition: Transition):
+        output_levels, snapshot, scenario = transition.payload
+        clock, reset, ce, le, *inputs = snapshot
         assert len(output_levels) == len(self.outputs)
-        if (payload.reset_too_short
-            or payload.le_too_short
-            or payload.clock_too_short
-            or payload.ce_too_short):
-            self.terminal_count.set(UNKNOWN, True)
-            for o, l in zip(self.outputs, output_levels):
-                o.set(UNKNOWN, True)
-        else:
+        is_stable = True
+        if scenario == 'reset':
+            is_stable = (is_stable
+                         and logic_level(reset) == HI
+                         and reset.hold() >= self.tw)
+        elif scenario == 'load':
+            is_stable = (is_stable
+                        and logic_level(le) == HI
+                        and le.hold() >= self.th
+                        and logic_level(clock) == HI
+                        and clock.hold() >= self.tw)
+            for input in inputs:
+                is_stable = (is_stable
+                            and input.hold() >= self.th)
+        elif scenario == 'count':
+            is_stable = (is_stable
+                        and logic_level(ce) == HI
+                        and ce.hold() >= self.th
+                        and logic_level(clock) == HI
+                        and clock.hold() >= self.tw)
+        elif scenario == 'invalid':
+            is_stable = False
+        if is_stable:
             if all((o == HI for o in output_levels)):
-                self.terminal_count.set(HI, True)
+                self.terminal_count.set(HI)
             elif all((o in [LO, HI] for o in output_levels)):
-                self.terminal_count.set(LO, True)
+                self.terminal_count.set(LO)
             else:
-                self.terminal_count.set(UNKNOWN, True)
+                self.terminal_count.set(UNKNOWN)
             for o, l in zip(self.outputs, output_levels):
-                o.set(l, True)
+                o.set(l)
+        else:
+            self.terminal_count.set(UNKNOWN)
+            for o, l in zip(self.outputs, output_levels):
+                o.set(UNKNOWN)
