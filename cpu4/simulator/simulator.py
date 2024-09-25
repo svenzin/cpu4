@@ -151,13 +151,15 @@ class BaseState:
         self.t_end = None
 
 class State:
-    def __init__(self, value: BaseLevel=None):
-        if value is None:
-            self.i = None
-            self.timeline = []
-        else:
+    def __init__(self, value: BaseLevel=None, *, other: 'State'=None, read_only=False):
+        assert (value is not None) != (other is not None)
+        self.read_only = read_only
+        if value is not None:
             self.i = 0
             self.timeline = [BaseState(value)]
+        elif other is not None:
+            self.i = other.i
+            self.timeline = other.timeline
     
     def value(self):
         return self.timeline[self.i].value
@@ -170,6 +172,7 @@ class State:
             return system.timestamp - desc.t_begin
     
     def set(self, value: BaseLevel):
+        assert not self.read_only
         assert self.i == len(self.timeline) - 1
         desc = self.timeline[self.i]
         if value != desc.value:
@@ -182,9 +185,8 @@ class State:
         return self.timeline[self.i].t_begin == system.timestamp
 
     def _get(self, offset) -> 'State':
-        s = State()
-        s.i = self.i + offset
-        s.timeline = self.timeline
+        s = State(other=self)
+        s.i += offset
         return s
     
     def previous(self) -> 'State':
@@ -255,12 +257,12 @@ class System:
 
 system = System()
 
-STATE_UNDEFINED = BaseState(UNDEFINED)
-STATE_LO = BaseState(LO)
-STATE_HI = BaseState(HI)
-STATE_Z = BaseState(Z)
-STATE_UNKNOWN = BaseState(UNKNOWN)
-STATE_CONFLICT = BaseState(CONFLICT)
+STATE_UNDEFINED = State(UNDEFINED, read_only=True)
+STATE_LO = State(LO, read_only=True)
+STATE_HI = State(HI, read_only=True)
+STATE_Z = State(Z, read_only=True)
+STATE_UNKNOWN = State(UNKNOWN, read_only=True)
+STATE_CONFLICT = State(CONFLICT, read_only=True)
 
 # clock
 class Clock:
@@ -277,7 +279,7 @@ class Clock:
         self.tt = tt or s(0)
         self.t_hi = duty * period
         self.t_lo = (1 - duty) * period
-        self.clock = State()
+        self.clock = State(UNDEFINED)
         dt_phase = phase / 360 * period
         if dt_phase == Duration(0):
             self.dt = self.t_hi
@@ -290,7 +292,7 @@ class Clock:
             assert self.dt <= self.t_hi
             self.clock.set(HI)
         assert self.dt >= Duration(0)
-        assert self.clock.value in [HI, LO]
+        assert self.clock.value() in [HI, LO]
         system.register_element(self, 'clock')
         system.register_state(self.clock, 'clock.clock')
 
@@ -301,17 +303,17 @@ class Clock:
         assert dt <= self.dt
         self.dt -= dt
         if self.dt <= s(0):
-            if self.clock.value == LO:
+            if self.clock.value() == LO:
                 self.clock.set(HI)
                 self.dt += self.t_hi
-            elif self.clock.value == HI:
+            elif self.clock.value() == HI:
                 self.clock.set(LO)
                 self.dt += self.t_lo
             else:
                 assert False
 
 class Operator:
-    def __init__(self, inputs: list[State], op: dict[tuple, tuple], tp: Duration, tt: Duration, name='operator'):
+    def __init__(self, inputs: list[State], op: dict[tuple[BaseLevel], tuple[State]], tp: Duration, tt: Duration, name='operator'):
         assert tt <= tp
         self.tp = tp
         self.tt = tt
@@ -324,8 +326,8 @@ class Operator:
 
         self.output_count = len(next(iter(op.values())))
         assert all(self.output_count == len(o) for o in op.values())
-        self.outputs = [State() for _ in range(self.output_count)]
-        self.previous_outputs = UNDEFINED
+        self.outputs = [State(UNDEFINED) for _ in range(self.output_count)]
+        self.previous_outputs = None
         
         self.transitions = []
 
@@ -335,17 +337,16 @@ class Operator:
 
     def next_update(self):
         inputs = logic_levels(self.inputs)
-        if (self.previous_outputs != UNDEFINED
+        if (self.previous_outputs is not None
             or len(inputs) == 0
             or any((i != UNDEFINED for i in inputs))):
             try:
-                outputs = self.op[inputs]
+                outputs = logic_levels(self.op[inputs])
             except KeyError:
-                outputs = self.output_count * [STATE_UNKNOWN]
-            current_outputs = logic_levels(outputs)
-            if self.previous_outputs != current_outputs:
+                outputs = self.output_count * [UNKNOWN]
+            if self.previous_outputs != outputs:
                 self.transitions.append((outputs, self.tp))
-                self.previous_outputs = current_outputs
+                self.previous_outputs = outputs
         if len(self.transitions) > 0:
             _, dt = self.transitions[0]
             return dt
@@ -361,7 +362,7 @@ class Operator:
             dt_transition -= dt
             if dt_transition <= Duration(0):
                 for output, value in zip(self.outputs, values):
-                    output.set(value.value)
+                    output.set(value)
             else:
                 transitions.append((values, dt_transition))
         self.transitions = transitions
@@ -491,7 +492,7 @@ class Enabler:
         self.tt_dis = tt_dis
         
         self.output_enabled = None
-        self.output = State()
+        self.output = State(UNDEFINED)
         
         self.disabled_state = disabled
         
@@ -506,7 +507,7 @@ class Enabler:
         self.transitions.append((output_enabled, dt))
 
     def next_update(self):
-        en = self.en.logic_level()
+        en = logic_level(self.en)
         if self.previous_en != en:
             if en == HI:
                 self.append(True, self.tp_en)
@@ -540,9 +541,9 @@ class Enabler:
         if self.output_enabled is None:
             self.output.set(UNKNOWN)
         elif self.output_enabled:
-            self.output.set(self.input.value)
+            self.output.set(self.input.value())
         else:
-            self.output.set(self.disabled_state.value)
+            self.output.set(self.disabled_state.value())
 
 class Buffer3S:
     def __init__(self, input: State, tp: Duration, tt: Duration, en: State, t_en: Duration, t_dis: Duration):

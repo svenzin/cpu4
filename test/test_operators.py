@@ -15,18 +15,18 @@ class TestClock(OperatorTestCase):
     def test_init_phase_0(self):
         s.system.clear()
         c = s.Clock(s.hz(1), tt=s.ms(200), phase=0)
-        self.assertEqual(HI, c.clock.value)
+        self.assertEqual(HI, c.clock.value())
         self.assertEqual(s.s(0.5), c.next_update())
         c.update(s.s(0.5))
-        self.assertEqual(LO, c.clock.value)
+        self.assertEqual(LO, c.clock.value())
 
     def test_init_phase_180(self):
         s.system.clear()
         c = s.Clock(s.hz(1), tt=s.ms(200), phase=180)
-        self.assertEqual(LO, c.clock.value)
+        self.assertEqual(LO, c.clock.value())
         self.assertEqual(s.s(0.5), c.next_update())
         c.update(s.s(0.5))
-        self.assertEqual(HI, c.clock.value)
+        self.assertEqual(HI, c.clock.value())
 
     def test_clock(self):
         s.system.clear()
@@ -39,10 +39,10 @@ class TestClock(OperatorTestCase):
         def step(t, cv):
             s.system.step()
             self.assertTimestamp(s.s(t))
-            self.assertEqual(cv, c.clock.value)
+            self.assertEqual(cv, c.clock.value())
 
         self.assertTimestamp(s.s(0))
-        self.assertEqual(HI, c.clock.value)
+        self.assertEqual(HI, c.clock.value())
 
         step(0.15, LO)
         step(0.75, HI)
@@ -52,10 +52,10 @@ class TestClock(OperatorTestCase):
 class TestBuffer(unittest.TestCase):
     def test_init_lo(self):
         s.system.clear()
-        i = s.State()
+        i = s.State(UNDEFINED)
         
         b = s.Buffer(i, s.s(1), s.ms(100))
-        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(UNDEFINED, b.output.value())
         self.assertEqual(None, b.next_update())
         
         # Initial state
@@ -63,15 +63,15 @@ class TestBuffer(unittest.TestCase):
         self.assertEqual(s.s(1), b.next_update())
         
         b.update(s.s(1))
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
         self.assertEqual(None, b.next_update())
 
     def test_init_hi(self):
         s.system.clear()
-        i = s.State()
+        i = s.State(UNDEFINED)
         
         b = s.Buffer(i, s.s(1), s.ms(100))
-        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(UNDEFINED, b.output.value())
         self.assertEqual(None, b.next_update())
         
         # Initial state
@@ -79,14 +79,13 @@ class TestBuffer(unittest.TestCase):
         self.assertEqual(s.s(1), b.next_update())
         
         b.update(s.s(1))
-        self.assertEqual(HI, b.output.value)
+        self.assertEqual(HI, b.output.value())
         self.assertEqual(None, b.next_update())
 
     def init(self, level):
         s.system.clear()
-        i = s.State()
+        i = s.State(level)
         b = s.Buffer(i, s.s(1), s.ms(100))
-        i.set(level)
         b.next_update()
         b.update(s.s(0))
         return i, b
@@ -96,13 +95,13 @@ class TestBuffer(unittest.TestCase):
         i.set(HI)
         self.assertEqual(s.s(1), b.next_update())
         b.update(s.s(1))
-        self.assertEqual(HI, b.output.value)
+        self.assertEqual(HI, b.output.value())
 
         i, b = self.init(HI)
         i.set(LO)
         self.assertEqual(s.s(1), b.next_update())
         b.update(s.s(1))
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
 
     def test_multiple_changes(self):
         i, b = self.init(LO)
@@ -113,29 +112,26 @@ class TestBuffer(unittest.TestCase):
         i.set(LO)
         self.assertEqual(s.s(0.5), b.next_update())
         b.update(s.s(0.5))                             # t=1, output LO>HI
-        self.assertEqual(HI, b.output.value)
+        self.assertEqual(HI, b.output.value())
         self.assertEqual(s.s(0.50), b.next_update())
         b.update(s.s(0.50))                             # t=1.5, output HI>LO
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
 
 class Test3State(unittest.TestCase):
     def test_simple(self):
         s.system.clear()
         
-        i = s.State()
-        i.set(LO)
-        
-        en = s.State()
-        en.set(HI)
+        i = s.State(LO)
+        en = s.State(HI)
         
         # b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), s.STATE_Z)
         b = s.EnablerOperator(i, en, s.s(1), s.ms(100), s.STATE_Z)
-        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(UNDEFINED, b.output.value())
         # self.assertEqual(s.s(0.1), b.next_update())
         # b.update(s.s(0.1))
         self.assertEqual(s.s(1), b.next_update())
         b.update(s.s(1))
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
         self.assertEqual(None, b.next_update())
 
         en.set(LO)
@@ -143,7 +139,7 @@ class Test3State(unittest.TestCase):
         # b.update(s.ms(200))
         self.assertEqual(s.s(1), b.next_update())
         b.update(s.s(1))
-        self.assertEqual(Z, b.output.value)
+        self.assertEqual(Z, b.output.value())
         self.assertEqual(None, b.next_update())
 
         en.set(HI)
@@ -151,17 +147,14 @@ class Test3State(unittest.TestCase):
         # b.update(s.ms(100))
         self.assertEqual(s.s(1), b.next_update())
         b.update(s.s(1))
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
         self.assertEqual(None, b.next_update())
 
     def test_multiple_changes(self):
         s.system.clear()
         
-        i = s.State()
-        i.set(LO)
-        
-        en = s.State()
-        en.set(HI)
+        i = s.State(LO)
+        en = s.State(HI)
         
         b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), s.STATE_Z)
         self.assertEqual(s.s(0.1), b.next_update()) # initialization
@@ -174,10 +167,10 @@ class Test3State(unittest.TestCase):
         en.set(HI)
         self.assertEqual(s.ms(50), b.next_update())
         b.update(s.ms(50))
-        self.assertEqual(Z, b.output.value)
+        self.assertEqual(Z, b.output.value())
         self.assertEqual(s.ms(50), b.next_update())
         b.update(s.ms(50))
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
         self.assertEqual(None, b.next_update())
 
         # disable then re-enable before disabling started
@@ -187,24 +180,21 @@ class Test3State(unittest.TestCase):
         en.set(HI)
         self.assertEqual(s.ms(100), b.next_update())
         b.update(s.ms(100))
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
         self.assertEqual(None, b.next_update())
 
 class TestAnd(unittest.TestCase):
     def test_simple(self):
         s.system.clear()
         
-        i = s.State()
-        i.set(LO)
-        
-        j = s.State()
-        j.set(LO)
+        i = s.State(LO)
+        j = s.State(LO)
         
         b = s.And(i, j, s.s(1), s.ms(100))
-        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(UNDEFINED, b.output.value())
         self.assertEqual(s.s(1), s.system.next_update())
         s.system.update(s.s(1))
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
         self.assertEqual(None, s.system.next_update())
 
         i.set(HI)
@@ -217,52 +207,46 @@ class TestAnd(unittest.TestCase):
         i.set(HI)
         self.assertEqual(s.s(1), s.system.next_update())
         s.system.update(s.s(1))
-        self.assertEqual(HI, b.output.value)
+        self.assertEqual(HI, b.output.value())
 
         i.set(LO)
         j.set(LO)
         self.assertEqual(s.s(1), s.system.next_update())
         s.system.update(s.s(1))
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
 
     def test_error(self):
         s.system.clear()
         
-        i = s.State()
-        i.set(LO)
-        
-        j = s.State()
-        j.set(LO)
+        i = s.State(LO)
+        j = s.State(LO)
         
         b = s.And(i, j, s.s(1), s.ms(100))
         s.system.step()
 
         i.set(Z)
         s.system.step()
-        self.assertEqual(UNKNOWN, b.output.value)
+        self.assertEqual(UNKNOWN, b.output.value())
 
         i.set(LO)
         s.system.step()
-        self.assertEqual(LO, b.output.value)
+        self.assertEqual(LO, b.output.value())
         i.set(CONFLICT)
         s.system.step()
-        self.assertEqual(UNKNOWN, b.output.value)
+        self.assertEqual(UNKNOWN, b.output.value())
 
         i.set(LO)
         s.system.step()
         i.set(UNKNOWN)
         s.system.step()
-        self.assertEqual(UNKNOWN, b.output.value)
+        self.assertEqual(UNKNOWN, b.output.value())
 
 class TestDecoder(OperatorTestCase):
     def test_1_to_2(self):
         s.system.clear()
 
-        en = s.State()
-        en.set(LO)
-        
-        i0 = s.State()
-        i0.set(LO)
+        en = s.State(LO)
+        i0 = s.State(LO)
         
         d = s.Decoder([i0], en, s.s(1), s.s(0.5), s.s(0.1))
         self.assertEqual(2, len(d.outputs))
@@ -312,11 +296,11 @@ class TestCombinations(OperatorTestCase):
         def step(t, cv, bv):
             s.system.step()
             self.assertTimestamp(s.s(t))
-            self.assertEqual(cv, c.clock.value)
-            self.assertEqual(bv, b.output.value)
+            self.assertEqual(cv, c.clock.value())
+            self.assertEqual(bv, b.output.value())
 
-        self.assertEqual(HI, c.clock.value)
-        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(HI, c.clock.value())
+        self.assertEqual(UNDEFINED, b.output.value())
         step(0.50, HI, HI)
         step(1.00, LO, HI)
         step(1.50, LO, LO)
@@ -324,8 +308,7 @@ class TestCombinations(OperatorTestCase):
     def test_3s_buffered_clock(self):
         s.system.clear()
 
-        en = s.State()
-        en.set(HI)
+        en = s.State(HI)
         c = s.Clock(s.hz(0.5), tt=s.ms(100))
         b = s.Buffer3S(c.clock, s.ms(500), s.ms(100), en, s.ms(100), s.ms(100))
 
@@ -335,11 +318,11 @@ class TestCombinations(OperatorTestCase):
             while s.system.next_update() == s.Duration(0):
                 s.system.step()
             self.assertTimestamp(s.s(t))
-            self.assertEqual(cv, c.clock.value)
-            self.assertEqual(bv, b.output.value)
+            self.assertEqual(cv, c.clock.value())
+            self.assertEqual(bv, b.output.value())
 
-        self.assertEqual(HI, c.clock.value)
-        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(HI, c.clock.value())
+        self.assertEqual(UNDEFINED, b.output.value())
         step(0.1, HI, UNDEFINED) # output enabler updates @ 0.1 but buffer propagates only after 0.5
         step(0.5, HI, HI)
         en.set(LO)
@@ -358,11 +341,11 @@ class TestCombinations(OperatorTestCase):
         def step(t, cv, bv):
             s.system.step()
             self.assertTimestamp(s.s(t))
-            self.assertEqual(cv, c.clock.value)
-            self.assertEqual(bv, b.output.value)
+            self.assertEqual(cv, c.clock.value())
+            self.assertEqual(bv, b.output.value())
 
-        self.assertEqual(HI, c.clock.value)
-        self.assertEqual(UNDEFINED, b.output.value)
+        self.assertEqual(HI, c.clock.value())
+        self.assertEqual(UNDEFINED, b.output.value())
         step(0.50, HI, LO)
         step(1.00, LO, LO)
         step(1.50, LO, HI)
@@ -376,16 +359,16 @@ class TestCombinations(OperatorTestCase):
         def step(t, cv, nv, av):
             s.system.step()
             self.assertTimestamp(s.s(t))
-            self.assertEqual(cv, c.clock.value)
-            self.assertEqual(nv, bc.output.value)
-            self.assertEqual(av, a.output.value)
+            self.assertEqual(cv, c.clock.value())
+            self.assertEqual(nv, bc.output.value())
+            self.assertEqual(av, a.output.value())
 
         # initialization is unreliable because
         # clock starts at LO>HI transition
         # c.update(s.Duration(0))
-        self.assertEqual(HI, c.clock.value)
-        self.assertEqual(UNDEFINED, bc.output.value)
-        self.assertEqual(UNDEFINED, a.output.value)
+        self.assertEqual(HI, c.clock.value())
+        self.assertEqual(UNDEFINED, bc.output.value())
+        self.assertEqual(UNDEFINED, a.output.value())
         step(0.10, HI, UNDEFINED, UNKNOWN)
         step(0.20, HI, HI, UNKNOWN)
         step(0.30, HI, HI, HI)
@@ -452,18 +435,18 @@ class TestMux(OperatorTestCase):
         i0, i1, i2, i3 = [s.State(LO) for _ in range(4)]
         m = s.Muxer([i0, i1, i2, i3], [is0, is1], s.s(1), s.s(0.1))
 
-        self.assertEqual(UNDEFINED, m.output.value)
+        self.assertEqual(UNDEFINED, m.output.value())
         s.system.step()
-        self.assertEqual(LO, m.output.value)
+        self.assertEqual(LO, m.output.value())
         i0.set(HI)
         s.system.step()
-        self.assertEqual(HI, m.output.value)
+        self.assertEqual(HI, m.output.value())
         is1.set(HI)
         s.system.step()
-        self.assertEqual(LO, m.output.value)
+        self.assertEqual(LO, m.output.value())
         i2.set(HI)
         s.system.step()
-        self.assertEqual(HI, m.output.value)
+        self.assertEqual(HI, m.output.value())
 
 class TestAdder(OperatorTestCase):
     def test_2_bits(self):
@@ -477,26 +460,26 @@ class TestAdder(OperatorTestCase):
                 pass
         
         self.assertStatesEqual([UNDEFINED, UNDEFINED], a.outputs)
-        self.assertEqual(UNDEFINED, a.cout.value)
+        self.assertEqual(UNDEFINED, a.cout.value())
         step()
         self.assertStatesEqual([LO, LO], a.outputs)
-        self.assertEqual(LO, a.cout.value)
+        self.assertEqual(LO, a.cout.value())
         a0.set(HI)
         step()
         self.assertStatesEqual([LO, HI], a.outputs)
-        self.assertEqual(LO, a.cout.value)
+        self.assertEqual(LO, a.cout.value())
         b0.set(HI)
         step()
         self.assertStatesEqual([HI, LO], a.outputs)
-        self.assertEqual(LO, a.cout.value)
+        self.assertEqual(LO, a.cout.value())
         a1.set(HI)
         step()
         self.assertStatesEqual([LO, LO], a.outputs)
-        self.assertEqual(HI, a.cout.value)
+        self.assertEqual(HI, a.cout.value())
         cin.set(HI)
         step()
         self.assertStatesEqual([LO, HI], a.outputs)
-        self.assertEqual(HI, a.cout.value)
+        self.assertEqual(HI, a.cout.value())
 
 class TestDtypeFlipFlop(OperatorTestCase):
     def init(self):
