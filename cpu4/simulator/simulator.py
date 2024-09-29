@@ -592,17 +592,10 @@ class DtypeFlipFlop(Base):
         assert th <= tp
         assert tr <= tp
         self.inputs = inputs
-        self.inputs_dt = Duration(0)
-        self.previous_inputs_values = logic_levels(inputs)
         self.clock = clock
-        self.clock_dt = Duration(0)
-        self.previous_clock_value = clock.logic_level()
         self.reset = reset
-        self.reset_dt = Duration(0)
-        self.previous_reset_value = reset.logic_level()
         self.enable = enable
-        self.enable_dt = Duration(0)
-        self.previous_enable_value = enable.logic_level()
+
         self.tp = tp
         self.tt = tt
         self.tw = tw
@@ -610,76 +603,75 @@ class DtypeFlipFlop(Base):
         self.ts = ts
         self.th = th
 
-        self.outputs = [State() for _ in inputs]
+        self.outputs = [State(UNDEFINED) for _ in inputs]
 
     def next_update(self):
-        inputs = logic_levels(self.inputs)
-        if inputs != self.previous_inputs_values:
-            for transition in self.transitions:
-                if transition.payload[2] is not None and transition.elapsed_dt < self.th:
-                    transition.payload[2] = True
-        clock = self.clock.logic_level()
-        if clock != self.previous_clock_value:
-            if self.clock_dt < self.tr:
-                for transition in self.transitions:
-                    transition.payload[3] = True
-        reset = self.reset.logic_level()
-        if reset != self.previous_reset_value:
-            if self.previous_reset_value == HI and self.reset_dt < self.tr:
-                for transition in self.transitions:
-                    if transition.payload[1] is not None:
-                        transition.payload[1] = True
-        enable = self.enable.logic_level()
-        if enable != self.previous_enable_value:
-            if self.previous_enable_value == HI:
-                for transition in self.transitions:
-                    if transition.payload[2] is not None and transition.elapsed_dt < self.th:
-                        transition.payload[2] = True
-        if clock != self.previous_clock_value:
-            if self.clock_dt < self.tw:
-                self.previous_clock_value = UNKNOWN
-            if reset == LO and enable == HI and clock == HI:
-                if self.previous_clock_value == LO and self.inputs_dt >= self.ts and self.enable_dt >= self.ts and self.reset_dt >= self.tr:
-                    inputs = logic_levels(self.inputs)
-                else:
-                    inputs = [UNKNOWN for _ in self.inputs]
-                self.append_transition(self.tp, inputs, None, False, False)
-            self.clock_dt = Duration(0)
-            self.previous_clock_value = clock
-        if inputs != self.previous_inputs_values:
-            self.previous_inputs_values = inputs
-            self.inputs_dt = Duration(0)
-        if reset != self.previous_reset_value:
+        now = system.timestamp
+        snapshot = [s.sample() for s in [self.clock, self.reset, self.enable] + self.inputs]
+        clock, reset, enable, *inputs = snapshot
+        previous_clock = clock.previous()
+        is_clocked = (clock.has_changed()
+                      and logic_level(clock) == HI
+                      and logic_level(previous_clock) == LO
+                      # inhibit clock during ~enable or reset
+                      and logic_level(reset) == LO
+                      and logic_level(enable) == HI)
+        if is_clocked:
+            if (previous_clock.duration() >= self.tw
+                and logic_level(enable) == HI
+                and enable.setup(now) >= self.ts
+                and reset.setup(now) >= self.tr
+                and all((input.setup(now) >= self.ts for input in self.inputs))):
+                desired_outputs = logic_levels(self.inputs)
+            else:
+                desired_outputs = [UNKNOWN for _ in self.inputs]
+            self.append_transition(self.tp,
+                                   desired_outputs,
+                                   snapshot,
+                                   'load')
+        if reset.has_changed():
+            reset = logic_level(reset)
             if reset == LO:
                 pass
-            elif reset == HI:
-                inputs = [LO for _ in self.inputs]
-                self.append_transition(self.tp, inputs, False, None, False)
             else:
-                inputs = [UNKNOWN for _ in self.inputs]
-                self.append_transition(self.tp, inputs, False, None, False)
-            self.previous_reset_value = reset
-            self.reset_dt = Duration(0)
-        if enable != self.previous_enable_value:
-            self.previous_enable_value = enable
-            self.enable_dt = Duration(0)
+                if reset == HI:
+                    desired_outputs = [LO for _ in self.inputs]
+                else:
+                    desired_outputs = [UNKNOWN for _ in self.inputs]
+                self.append_transition(self.tp,
+                                       desired_outputs,
+                                       snapshot,
+                                       'reset')
         return super().next_update()
-    
-    def update(self, dt):
-        self.inputs_dt += dt
-        self.clock_dt += dt
-        self.reset_dt += dt
-        self.enable_dt += dt
-        return super().update(dt)
 
-    def transition(self, output_levels, reset_too_short, enable_too_short, clock_too_short):
+    def transition(self, transition: Transition):
+        t = transition.timestamp
+        output_levels, snapshot, scenario = transition.payload
+        clock, reset, enable, *inputs = snapshot
         assert len(output_levels) == len(self.outputs)
-        for o, l in zip(self.outputs, output_levels):
-            if reset_too_short or enable_too_short or clock_too_short:
-                o.set(UNKNOWN)
-            else:
-                o.set(l)
+        is_stable = True
+        if scenario == 'reset':
+            is_stable = (is_stable
+                         and logic_level(reset) == HI
+                         and reset.hold(t) >= self.th)
+        elif scenario == 'load':
+            is_stable = (is_stable
+                        and logic_level(clock) == HI
+                        and clock.hold(t) >= self.tw
+                        and logic_level(enable) == HI
+                        and enable.hold(t) >= self.th)
+            for input in inputs:
+                is_stable = (is_stable
+                            and input.hold(t) >= self.th)
+        else:
+            is_stable = False
 
+        if is_stable:
+            for o, l in zip(self.outputs, output_levels):
+                o.set(l)
+        else:
+            for o, l in zip(self.outputs, output_levels):
+                o.set(UNKNOWN)
 
 class BinaryCounter(Base):
     def __init__(self, inputs, clock, reset, ce, le, tp, tt, tw, tr, ts, th):
@@ -716,7 +708,6 @@ class BinaryCounter(Base):
                       and logic_level(reset) == LO)
         if is_clocked:
             if (previous_clock.duration() >= self.tw
-                and logic_level(reset) == LO
                 and logic_level(le) == HI):
                 if (reset.setup(now) >= self.tr
                     and le.setup(now) >= self.ts
@@ -729,7 +720,6 @@ class BinaryCounter(Base):
                                        snapshot,
                                        'load')
             elif (previous_clock.duration() >= self.tw
-                  and logic_level(reset) == LO
                   and logic_level(ce) == HI):
                 if(reset.setup(now) >= self.tr
                   and ce.setup(now) >= self.ts):
