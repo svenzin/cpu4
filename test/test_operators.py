@@ -122,33 +122,33 @@ class Test3State(unittest.TestCase):
         s.system.clear()
         
         i = s.State(LO)
-        en = s.State(HI)
+        oe = s.State(HI)
         
         # b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), s.STATE_Z)
-        b = s.EnablerOperator(i, en, s.s(1), s.ms(100), s.STATE_Z)
+        b = s.OutputEnabler(i, oe, s.s(1), s.STATE_Z)
         self.assertEqual(UNDEFINED, b.output.value())
         # self.assertEqual(s.s(0.1), b.next_update())
         # b.update(s.s(0.1))
-        self.assertEqual(s.s(1), b.next_update())
-        b.update(s.s(1))
+        self.assertEqual(s.s(1), s.system.next_update())
+        s.system.update(s.s(1))
         self.assertEqual(LO, b.output.value())
-        self.assertEqual(None, b.next_update())
+        self.assertEqual(None, s.system.next_update())
 
-        en.set(LO)
+        oe.set(LO)
         # self.assertEqual(s.ms(200), b.next_update())
         # b.update(s.ms(200))
-        self.assertEqual(s.s(1), b.next_update())
-        b.update(s.s(1))
+        self.assertEqual(s.s(1), s.system.next_update())
+        s.system.update(s.s(1))
         self.assertEqual(Z, b.output.value())
-        self.assertEqual(None, b.next_update())
+        self.assertEqual(None, s.system.next_update())
 
-        en.set(HI)
+        oe.set(HI)
         # self.assertEqual(s.ms(100), b.next_update())
         # b.update(s.ms(100))
-        self.assertEqual(s.s(1), b.next_update())
-        b.update(s.s(1))
+        self.assertEqual(s.s(1), s.system.next_update())
+        s.system.update(s.s(1))
         self.assertEqual(LO, b.output.value())
-        self.assertEqual(None, b.next_update())
+        self.assertEqual(None, s.system.next_update())
 
     def test_multiple_changes(self):
         s.system.clear()
@@ -156,32 +156,45 @@ class Test3State(unittest.TestCase):
         i = s.State(LO)
         en = s.State(HI)
         
-        b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), s.STATE_Z)
-        self.assertEqual(s.s(0.1), b.next_update()) # initialization
-        b.update(s.s(0.1))
+        # b = s.Enabler(i, en, s.ms(100), s.ms(200), s.s(0), s.s(0), s.STATE_Z)
+        b = s.OutputEnabler(i, en, s.s(1), s.STATE_Z)
+        # self.assertEqual(s.s(0.1), b.next_update()) # initialization
+        # b.update(s.s(0.1))
+        self.assertEqual(s.s(1), s.system.next_update()) # initialization
+        s.system.update(s.s(1))
 
         # disable then re-enable before fully disabled
         en.set(LO)
-        self.assertEqual(s.ms(200), b.next_update())
-        b.update(s.ms(150))
+        # self.assertEqual(s.ms(200), b.next_update())
+        # b.update(s.ms(150))
+        self.assertEqual(s.s(1), s.system.next_update())
+        s.system.update(s.ms(950))
         en.set(HI)
-        self.assertEqual(s.ms(50), b.next_update())
-        b.update(s.ms(50))
+        self.assertEqual(s.ms(50), s.system.next_update())
+        s.system.update(s.ms(50))
         self.assertEqual(Z, b.output.value())
-        self.assertEqual(s.ms(50), b.next_update())
-        b.update(s.ms(50))
+        # self.assertEqual(s.ms(50), b.next_update())
+        # b.update(s.ms(50))
+        self.assertEqual(s.ms(950), s.system.next_update())
+        s.system.update(s.ms(950))
         self.assertEqual(LO, b.output.value())
-        self.assertEqual(None, b.next_update())
+        self.assertEqual(None, s.system.next_update())
 
         # disable then re-enable before disabling started
         en.set(LO)
-        self.assertEqual(s.ms(200), b.next_update())
-        b.update(s.ms(50))
+        # self.assertEqual(s.ms(200), b.next_update())
+        self.assertEqual(s.s(1), s.system.next_update())
+        s.system.update(s.ms(50))
         en.set(HI)
-        self.assertEqual(s.ms(100), b.next_update())
-        b.update(s.ms(100))
+        # self.assertEqual(s.ms(100), b.next_update())
+        # b.update(s.ms(100))
+        self.assertEqual(s.ms(950), s.system.next_update())
+        s.system.update(s.ms(950))
+        self.assertEqual(Z, b.output.value())
+        self.assertEqual(s.ms(50), s.system.next_update())
+        s.system.update(s.ms(50))
         self.assertEqual(LO, b.output.value())
-        self.assertEqual(None, b.next_update())
+        self.assertEqual(None, s.system.next_update())
 
 class TestAnd(unittest.TestCase):
     def test_simple(self):
@@ -252,38 +265,43 @@ class TestDecoder(OperatorTestCase):
         self.assertEqual(2, len(d.outputs))
         self.assertStatesEqual([UNDEFINED, UNDEFINED], d.outputs)
         
-        s.system.step() # outputs are disabled by en
-        self.assertTimestamp(s.s(0.5))
+        def step_until(t):
+            target = s.Timestamp(0) + s.s(t)
+            # loop over internal changes, check outputs are constant
+            expected = [o.value() for o in d.outputs]
+            while s.system.timestamp < target:
+                for exp, act in zip(expected, d.outputs):
+                    self.assertEqual(exp, act.value())
+                s.system.step()
+            while s.system.next_update() == s.Duration(0):
+                s.system.step()
+            self.assertTimestamp(s.s(t))
+
+        step_until(0.5) # outputs are disabled by en
         self.assertStatesEqual([LO, LO], d.outputs)
         
         en.set(HI)
-        s.system.step()
-        self.assertTimestamp(s.s(1))
+        step_until(1)
         self.assertStatesEqual([HI, LO], d.outputs)
         
         i0.set(HI)
-        s.system.step()
-        self.assertTimestamp(s.s(2))
+        step_until(2)
         self.assertStatesEqual([LO, HI], d.outputs)
         
         en.set(LO)
-        s.system.step()
-        self.assertTimestamp(s.s(2.5))
+        step_until(2.5)
         self.assertStatesEqual([LO, LO], d.outputs)
         
         en.set(UNKNOWN)
-        s.system.step()
-        self.assertTimestamp(s.s(3))
+        step_until(3)
         self.assertStatesEqual([UNKNOWN, UNKNOWN], d.outputs)
         
         en.set(HI)
-        s.system.step()
-        self.assertTimestamp(s.s(3.5))
+        step_until(3.5)
         self.assertStatesEqual([LO, HI], d.outputs)
         
         i0.set(UNKNOWN)
-        s.system.step()
-        self.assertTimestamp(s.s(4.5))
+        step_until(4.5)
         self.assertStatesEqual([UNKNOWN, UNKNOWN], d.outputs)
 
 class TestCombinations(OperatorTestCase):
@@ -308,29 +326,41 @@ class TestCombinations(OperatorTestCase):
     def test_3s_buffered_clock(self):
         s.system.clear()
 
+        global c
+        global b
         en = s.State(HI)
         c = s.Clock(s.hz(0.5), tt=s.ms(100))
-        b = s.Buffer3S(c.clock, s.ms(500), s.ms(100), en, s.ms(100), s.ms(100))
+        b = s.Buffer3S(c.clock, s.ms(500), s.ms(100), en, s.ms(100))
 
-        def step(t, cv, bv):
-            # take a step, stabilize outputs, perform checks
-            s.system.step()
+        def step_until(t, cv, bv):
+            target = s.Timestamp(0) + s.s(t)
+            # loop over internal changes
+            #     states should not change
+            # once the target timestamp is reached
+            #     stabilise output at target timestamp
+            #     perform checks
+            initial_c = c.clock.value()
+            initial_b = b.output.value()
+            while s.system.timestamp < target:
+                self.assertEqual(initial_c, c.clock.value())
+                self.assertEqual(initial_b, b.output.value())
+                s.system.step()
             while s.system.next_update() == s.Duration(0):
                 s.system.step()
-            self.assertTimestamp(s.s(t))
             self.assertEqual(cv, c.clock.value())
             self.assertEqual(bv, b.output.value())
+            self.assertTimestamp(s.s(t))
 
         self.assertEqual(HI, c.clock.value())
         self.assertEqual(UNDEFINED, b.output.value())
-        step(0.1, HI, UNDEFINED) # output enabler updates @ 0.1 but buffer propagates only after 0.5
-        step(0.5, HI, HI)
+        step_until(0.1, HI, UNDEFINED) # output enabler updates @ 0.1 but buffer propagates only after 0.5
+        step_until(0.5, HI, HI)
         en.set(LO)
-        step(0.6, HI, Z)
-        step(1.0, LO, Z)
+        step_until(0.6, HI, Z)
+        step_until(1.0, LO, Z)
         en.set(HI)
-        step(1.1, LO, HI)
-        step(1.5, LO, LO)
+        step_until(1.1, LO, HI)
+        step_until(1.5, LO, LO)
 
     def test_inverted_clock(self):
         s.system.clear()
@@ -483,6 +513,7 @@ class TestAdder(OperatorTestCase):
 
 class TestDtypeFlipFlop(OperatorTestCase):
     def init(self):
+        s.system.clear()
         self.Tp = s.ms(20)
         self.Tt = s.ms(5)
         self.Tw = s.ms(7)

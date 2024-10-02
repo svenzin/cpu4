@@ -14,6 +14,9 @@ class Timestamp:
     def __repr__(self):
         return f'Timestamp({repr(self.t / 1e9)})'
     
+    def __add__(self, dt: 'Duration'):
+        return Timestamp(self.t + dt.d)
+    
     def __sub__(self, other: 'Timestamp'):
         return Duration(self.t - other.t)
     
@@ -161,6 +164,9 @@ class State:
             self.i = other.i
             self.timeline = other.timeline
     
+    def __repr__(self):
+        return f'State({repr(self.value())})'
+
     def value(self):
         return self.timeline[self.i].value
 
@@ -318,15 +324,15 @@ class Operator:
         self.tp = tp
         self.tt = tt
         
-        self.input_count = len(inputs)
-        assert all(self.input_count == len(o) for o in op.keys())
+        n_inputs = len(inputs)
+        assert all(n_inputs == len(o) for o in op.keys())
         self.inputs = inputs
 
         self.op = op
 
-        self.output_count = len(next(iter(op.values())))
-        assert all(self.output_count == len(o) for o in op.values())
-        self.outputs = [State(UNDEFINED) for _ in range(self.output_count)]
+        n_outputs = len(next(iter(op.values())))
+        assert all(n_outputs == len(o) for o in op.values())
+        self.outputs = [State(UNDEFINED) for _ in range(n_outputs)]
         self.previous_outputs = None
         
         self.transitions = []
@@ -343,7 +349,7 @@ class Operator:
             try:
                 outputs = logic_levels(self.op[inputs])
             except KeyError:
-                outputs = self.output_count * [UNKNOWN]
+                outputs = [UNKNOWN for _ in self.outputs] # self.output_count * [UNKNOWN]
             if self.previous_outputs != outputs:
                 self.transitions.append((outputs, self.tp))
                 self.previous_outputs = outputs
@@ -464,91 +470,20 @@ class Adder:
         self.cout = self.adder.outputs[0]
         self.outputs = self.adder.outputs[1:]
 
+class OutputEnabler(Muxer):
+    def __init__(self, input: State, oe: State, tp: Duration, disabled: State):
+        super().__init__([disabled, input], [oe], tp, Duration(0))
+
 class Decoder:
     def __init__(self, inputs: list[State], en: State, tp_data: Duration, tp_en: Duration, tt: Duration):
-        self.decoder = Demuxer(STATE_HI, inputs, tp_data, tt)
-        self.enablers = [Enabler(o, en, tp_en, tp_en, tt, tt, STATE_LO) for o in self.decoder.outputs]
+        self.decoder = Demuxer(STATE_HI, inputs, tp_data - tp_en, tt)
+        self.enablers = [OutputEnabler(o, en, tp_en, STATE_LO) for o in self.decoder.outputs]
         self.outputs = [e.output for e in self.enablers]
 
-class EnablerOperator(Operator):
-    def __init__(self, input: State, en: State, tp: Duration, tt: Duration, disabled: State):
-        super().__init__([en], {(LO,): (disabled,),
-                                (HI,): (input,)}, tp, tt, 'enabler')
-        self.output = self.outputs[0]
-
-class Enabler:
-    def __init__(self, input: State, en: State, tp_en: Duration, tp_dis: Duration, tt_en: Duration, tt_dis: Duration, disabled: State):
-        self.input = input
-
-        self.en = en
-        self.previous_en = UNDEFINED
-        
-        assert tt_en <= tp_en
-        self.tp_en = tp_en
-        self.tt_en = tt_en
-        
-        assert tt_dis <= tp_dis
-        self.tp_dis = tp_dis
-        self.tt_dis = tt_dis
-        
-        self.output_enabled = None
-        self.output = State(UNDEFINED)
-        
-        self.disabled_state = disabled
-        
-        self.transitions = []
-
-        system.register_element(self, 'enabler')
-        system.register_state(self.output, 'enabler.output')
-
-    def append(self, output_enabled, dt):
-        while len(self.transitions) > 0 and self.transitions[-1][1] > dt:
-            self.transitions.pop()
-        self.transitions.append((output_enabled, dt))
-
-    def next_update(self):
-        en = logic_level(self.en)
-        if self.previous_en != en:
-            if en == HI:
-                self.append(True, self.tp_en)
-            elif en == LO:
-                self.append(False, self.tp_dis)
-            else:
-                if self.previous_en == LO:
-                    self.append(None, self.tp_en)
-                elif self.previous_en == HI:
-                    self.append(None, self.tp_dis)
-                else:
-                    assert False
-            self.previous_en = en
-        if len(self.transitions) > 0:
-            _, dt = self.transitions[0]
-            return dt
-        else:
-            return None
-    
-    def update(self, dt: Duration):
-        if len(self.transitions) > 0:
-            transitions = []
-            for value, dt_transition in self.transitions:
-                assert dt <= dt_transition
-                dt_transition -= dt
-                if dt_transition <= Duration(0):
-                    self.output_enabled = value
-                else:
-                    transitions.append((value, dt_transition))
-            self.transitions = transitions
-        if self.output_enabled is None:
-            self.output.set(UNKNOWN)
-        elif self.output_enabled:
-            self.output.set(self.input.value())
-        else:
-            self.output.set(self.disabled_state.value())
-
 class Buffer3S:
-    def __init__(self, input: State, tp: Duration, tt: Duration, en: State, t_en: Duration, t_dis: Duration):
-        self.buffer = Buffer(input, tp, tt)
-        self.enabler = Enabler(self.buffer.output, en, t_en, t_dis, tt, tt, STATE_Z)
+    def __init__(self, input: State, tp: Duration, tt: Duration, en: State, tp_en: Duration):
+        self.buffer = Buffer(input, tp - tp_en, tt)
+        self.enabler = OutputEnabler(self.buffer.output, en, tp_en, STATE_Z)
         self.output = self.enabler.output
 
 class Transition:
@@ -583,6 +518,7 @@ class Base:
         if len(self.transitions) > 0 and self.transitions[0].remaining_dt <= Duration(0):
             transition = self.transitions.pop(0)
             self.transition(transition)
+
 
 class DtypeFlipFlop(Base):
     def __init__(self, inputs, clock, reset, enable, tp, tt, tw, tr, ts, th):
