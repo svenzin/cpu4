@@ -146,12 +146,12 @@ def logic_levels(states):
 class BaseState:
     value: BaseLevel
     t_begin: Timestamp
-    t_end: Optional[Timestamp]
+    t_end: Timestamp
     
     def __init__(self, value):
         self.value = value
         self.t_begin = system.timestamp.copy()
-        self.t_end = None
+        self.t_end = system.timestamp
 
 class State:
     def __init__(self, value: BaseLevel=None, *, other: 'State'=None, read_only=False):
@@ -172,10 +172,7 @@ class State:
 
     def duration(self) -> Duration:
         desc = self.timeline[self.i]
-        try:
-            return desc.t_end - desc.t_begin
-        except TypeError:
-            return system.timestamp - desc.t_begin
+        return desc.t_end - desc.t_begin
     
     def set(self, value: BaseLevel):
         assert not self.read_only
@@ -204,17 +201,14 @@ class State:
     def setup(self, t: Timestamp) -> Duration:
         desc = self.timeline[self.i]
         assert desc.t_begin <= t
-        assert desc.t_end is None or t <= desc.t_end
+        assert t <= desc.t_end
         return t - desc.t_begin
     
     def hold(self, t: Timestamp) -> Duration:
         desc = self.timeline[self.i]
         assert desc.t_begin <= t
-        assert desc.t_end is None or t <= desc.t_end
-        try:
-            return desc.t_end - t
-        except TypeError:
-            return system.timestamp - t
+        assert t <= desc.t_end
+        return desc.t_end - t
 
 # system
 
@@ -269,54 +263,6 @@ STATE_HI = State(HI, read_only=True)
 STATE_Z = State(Z, read_only=True)
 STATE_UNKNOWN = State(UNKNOWN, read_only=True)
 STATE_CONFLICT = State(CONFLICT, read_only=True)
-
-# clock
-class Clock:
-    def __init__(self,
-                 f: Frequency,
-                 *,
-                 tt: Optional[Duration]=None,
-                 duty: float=0.5,
-                 phase: float=0):
-        super().__init__()
-        assert 0 < duty < 1
-        assert 0 <= phase < 360
-        period = f.to_duration()
-        self.tt = tt or s(0)
-        self.t_hi = duty * period
-        self.t_lo = (1 - duty) * period
-        self.clock = State(UNDEFINED)
-        dt_phase = phase / 360 * period
-        if dt_phase == Duration(0):
-            self.dt = self.t_hi
-            self.clock.set(HI)
-        elif dt_phase <= self.t_lo:
-            self.dt = dt_phase
-            self.clock.set(LO)
-        else:
-            self.dt = dt_phase - self.t_lo
-            assert self.dt <= self.t_hi
-            self.clock.set(HI)
-        assert self.dt >= Duration(0)
-        assert self.clock.value() in [HI, LO]
-        system.register_element(self, 'clock')
-        system.register_state(self.clock, 'clock.clock')
-
-    def next_update(self):
-        return self.dt
-
-    def update(self, dt: Duration):
-        assert dt <= self.dt
-        self.dt -= dt
-        if self.dt <= s(0):
-            if self.clock.value() == LO:
-                self.clock.set(HI)
-                self.dt += self.t_hi
-            elif self.clock.value() == HI:
-                self.clock.set(LO)
-                self.dt += self.t_lo
-            else:
-                assert False
 
 class Operator:
     def __init__(self, inputs: list[State], op: dict[tuple[BaseLevel], tuple[State]], tp: Duration, tt: Duration, name='operator'):
@@ -383,6 +329,22 @@ class Inverter(Operator):
     def __init__(self, input: State, tp: Duration, tt: Duration):
         super().__init__([input], {(LO,): (STATE_HI,),
                                    (HI,): (STATE_LO,)}, tp, tt, 'inverter')
+        self.output = self.outputs[0]
+
+class Nand(Operator):
+    def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
+        super().__init__([input_a, input_b], {(LO, LO): (STATE_HI,),
+                                              (LO, HI): (STATE_HI,),
+                                              (HI, LO): (STATE_HI,),
+                                              (HI, HI): (STATE_LO,)}, tp, tt, 'and')
+        self.output = self.outputs[0]
+
+class Nor(Operator):
+    def __init__(self, input_a: State, input_b: State, tp: Duration, tt: Duration):
+        super().__init__([input_a, input_b], {(LO, LO): (STATE_HI,),
+                                              (LO, HI): (STATE_LO,),
+                                              (HI, LO): (STATE_LO,),
+                                              (HI, HI): (STATE_LO,)}, tp, tt, 'or')
         self.output = self.outputs[0]
 
 class And(Operator):
@@ -494,9 +456,9 @@ class Transition:
         self.payload = list(payload)
 
 class Base:
-    def __init__(self):
+    def __init__(self, name=''):
         self.transitions: list[Transition] = []
-        system.register_element(self, "")
+        system.register_element(self, name)
     
     def transition(self, payload):
         raise NotImplementedError()
@@ -520,9 +482,47 @@ class Base:
             self.transition(transition)
 
 
+class Clock(Base):
+    def __init__(self,
+                 f: Frequency,
+                 *,
+                 tt: Optional[Duration]=None,
+                 duty: float=0.5,
+                 phase: float=0):
+        super().__init__('clock')
+        assert 0 < duty < 1
+        assert 0 <= phase < 360
+        period = f.to_duration()
+        self.tt = tt or s(0)
+        self.t_hi = duty * period
+        self.t_lo = (1 - duty) * period
+        self.clock = State(UNDEFINED)
+        dt_phase = phase / 360 * period
+        if dt_phase == Duration(0):
+            self.rise()
+        elif dt_phase <= self.t_lo:
+            self.fall(dt_phase)
+        else:
+            dt = dt_phase - self.t_lo
+            assert dt <= self.t_hi
+            self.rise(dt)
+    
+    def rise(self, dt=None):
+        self.clock.set(HI)
+        self.append_transition(dt or self.t_hi, self.fall)
+    
+    def fall(self, dt=None):
+        self.clock.set(LO)
+        self.append_transition(dt or self.t_lo, self.rise)
+    
+    def transition(self, transition: Transition):
+        (action, ) = transition.payload
+        action()
+
+
 class DtypeFlipFlop(Base):
     def __init__(self, inputs, clock, reset, enable, tp, tt, tw, tr, ts, th):
-        super().__init__()
+        super().__init__('d_type_flipflop')
         assert tt <= tp
         assert tw <= tp
         assert th <= tp
@@ -611,7 +611,7 @@ class DtypeFlipFlop(Base):
 
 class BinaryCounter(Base):
     def __init__(self, inputs, clock, reset, ce, le, tp, tt, tw, tr, ts, th):
-        super().__init__()
+        super().__init__('binary_counter')
         assert tt <= tp
         assert tw <= tp
         assert th <= tp
@@ -644,7 +644,8 @@ class BinaryCounter(Base):
                       and logic_level(reset) == LO)
         if is_clocked:
             if (previous_clock.duration() >= self.tw
-                and logic_level(le) == HI):
+                and logic_level(le) == HI
+                and logic_level(ce) == LO):
                 if (reset.setup(now) >= self.tr
                     and le.setup(now) >= self.ts
                     and all((input.setup(now) >= self.ts for input in inputs))):
@@ -656,7 +657,8 @@ class BinaryCounter(Base):
                                        snapshot,
                                        'load')
             elif (previous_clock.duration() >= self.tw
-                  and logic_level(ce) == HI):
+                  and logic_level(ce) == HI
+                  and logic_level(le) == LO):
                 if(reset.setup(now) >= self.tr
                   and ce.setup(now) >= self.ts):
                     carry = HI
@@ -704,28 +706,21 @@ class BinaryCounter(Base):
         output_levels, snapshot, scenario = transition.payload
         clock, reset, ce, le, *inputs = snapshot
         assert len(output_levels) == len(self.outputs)
-        is_stable = True
+        is_stable = False
         if scenario == 'reset':
-            is_stable = (is_stable
-                         and logic_level(reset) == HI
+            is_stable = (logic_level(reset) == HI
                          and reset.hold(t) >= self.tw)
         elif scenario == 'load':
-            is_stable = (is_stable
-                        and logic_level(le) == HI
+            is_stable = (logic_level(le) == HI
                         and le.hold(t) >= self.th
                         and logic_level(clock) == HI
-                        and clock.hold(t) >= self.tw)
-            for input in inputs:
-                is_stable = (is_stable
-                            and input.hold(t) >= self.th)
+                        and clock.hold(t) >= self.tw
+                        and all((input.hold(t) >= self.th for input in inputs)))
         elif scenario == 'count':
-            is_stable = (is_stable
-                        and logic_level(ce) == HI
+            is_stable = (logic_level(ce) == HI
                         and ce.hold(t) >= self.th
                         and logic_level(clock) == HI
                         and clock.hold(t) >= self.tw)
-        elif scenario == 'invalid':
-            is_stable = False
         if is_stable:
             if all((o == HI for o in output_levels)):
                 self.terminal_count.set(HI)
