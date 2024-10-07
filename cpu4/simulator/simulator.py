@@ -188,7 +188,7 @@ class State:
         return self.timeline[self.i].t_begin == system.timestamp
 
     def _get(self, offset) -> 'State':
-        s = State(other=self)
+        s = State(other=self, read_only=True)
         s.i += offset
         return s
     
@@ -216,6 +216,7 @@ class System:
     def __init__(self, m=0.5) -> None:
         self._n = 0
         self.m = m
+        self.timestamp = Timestamp(0)
         self.clear()
 
     def register_element(self, element, name):
@@ -231,7 +232,7 @@ class System:
         self.states[uname] = state
     
     def clear(self):
-        self.timestamp = Timestamp(0)
+        self.timestamp.t = 0
         self.elements = {}
         self.states = {}
         self.timeline = []
@@ -284,8 +285,8 @@ class Operator:
         self.transitions = []
 
         system.register_element(self, name)
-        for o in self.outputs:
-            system.register_state(o, f'{name}.output')
+        for i, output in enumerate(self.outputs):
+            system.register_state(output, f'{name}.output_{i}')
 
     def next_update(self):
         inputs = logic_levels(self.inputs)
@@ -336,7 +337,7 @@ class Nand(Operator):
         super().__init__([input_a, input_b], {(LO, LO): (STATE_HI,),
                                               (LO, HI): (STATE_HI,),
                                               (HI, LO): (STATE_HI,),
-                                              (HI, HI): (STATE_LO,)}, tp, tt, 'and')
+                                              (HI, HI): (STATE_LO,)}, tp, tt, 'nand')
         self.output = self.outputs[0]
 
 class Nor(Operator):
@@ -344,7 +345,7 @@ class Nor(Operator):
         super().__init__([input_a, input_b], {(LO, LO): (STATE_HI,),
                                               (LO, HI): (STATE_LO,),
                                               (HI, LO): (STATE_LO,),
-                                              (HI, HI): (STATE_LO,)}, tp, tt, 'or')
+                                              (HI, HI): (STATE_LO,)}, tp, tt, 'nor')
         self.output = self.outputs[0]
 
 class And(Operator):
@@ -497,6 +498,7 @@ class Clock(Base):
         self.t_hi = duty * period
         self.t_lo = (1 - duty) * period
         self.clock = State(UNDEFINED)
+        system.register_state(self.clock, f'clock.output')
         dt_phase = phase / 360 * period
         if dt_phase == Duration(0):
             self.rise()
@@ -540,6 +542,9 @@ class DtypeFlipFlop(Base):
         self.th = th
 
         self.outputs = [State(UNDEFINED) for _ in inputs]
+        for i, output in enumerate(self.outputs):
+            system.register_state(output, f'd_type_flipflop.output_{i}')
+
 
     def next_update(self):
         now = system.timestamp
@@ -629,8 +634,12 @@ class BinaryCounter(Base):
         self.ts = ts
         self.th = th
 
-        self.outputs = [State(UNDEFINED) for _ in inputs]
+        self.outputs = [State(LO) for _ in inputs]
+        for i, output in enumerate(self.outputs):
+            system.register_state(output, f'binary_counter.output_{i}')
+
         self.terminal_count = State(UNDEFINED)
+        system.register_state(output, f'binary_counter.terminal_count')
 
     def next_update(self):
         now = system.timestamp
@@ -641,7 +650,9 @@ class BinaryCounter(Base):
                       and logic_level(clock) == HI
                       and logic_level(previous_clock) == LO
                       # inhibit clock during reset
-                      and logic_level(reset) == LO)
+                      and logic_level(reset) == LO
+                      and (logic_level(le) == HI
+                           or logic_level(ce) == HI))
         if is_clocked:
             if (previous_clock.duration() >= self.tw
                 and logic_level(le) == HI
